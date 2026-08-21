@@ -6,22 +6,29 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>J.A.R.V.I.S.</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #02060c; overflow: hidden; touch-action: none; }
-    canvas { display: block; width: 100%; height: 100%; }
+    html, body { margin: 0; height: 100%; background: #02060c; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; pointer-events: none; }
     #ptt {
-      position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom));
-      transform: translateX(-50%);
-      width: min(86vw, 420px); height: 72px;
-      border: 1px solid rgba(0, 220, 255, 0.65);
-      background: rgba(0, 30, 50, 0.75);
-      color: #7fe9ff; font: 18px Consolas, monospace; letter-spacing: 0.12em;
-      border-radius: 8px; z-index: 5;
+      position: fixed; left: 16px; right: 16px;
+      bottom: max(24px, env(safe-area-inset-bottom));
+      height: 88px;
+      z-index: 2147483647;
+      -webkit-appearance: none; appearance: none;
+      border: 3px solid #ffcc33;
+      background: #c47a00;
+      color: #1a1000;
+      font: 700 22px/1.1 -apple-system, system-ui, sans-serif;
+      letter-spacing: 0.06em;
+      border-radius: 14px;
+      box-shadow: 0 0 24px rgba(255, 180, 0, 0.55);
     }
-    #ptt.hot { background: rgba(180, 90, 0, 0.85); color: #ffd27a; border-color: #ffb020; }
+    #ptt.hot { background: #ffb020; }
     #msg {
-      position: fixed; left: 50%; bottom: calc(112px + env(safe-area-inset-bottom));
-      transform: translateX(-50%); width: 90vw; text-align: center;
-      color: rgba(127, 233, 255, 0.7); font: 13px Consolas, monospace; z-index: 5;
+      position: fixed; left: 12px; right: 12px;
+      bottom: calc(120px + env(safe-area-inset-bottom));
+      text-align: center;
+      color: #ffcc33; font: 15px -apple-system, system-ui, sans-serif;
+      z-index: 2147483647;
     }
   </style>
 </head>
@@ -38,7 +45,16 @@ const msg = document.getElementById("msg");
 const out = document.getElementById("out");
 let W = 0, H = 0, t0 = performance.now();
 const hud = { state: "idle", level: 0, line: "", name: "J.A.R.V.I.S." };
-let rec = null, chunks = [], holding = false;
+let rec = null, chunks = [], holding = false, actx = null;
+
+async function unlockAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!actx) actx = new AC();
+  if (actx.state === "suspended") await actx.resume();
+  out.muted = false;
+  out.play().catch(() => {});
+}
 
 function resize() { W = C.width = innerWidth; H = C.height = innerHeight; }
 addEventListener("resize", resize); resize();
@@ -105,6 +121,7 @@ async function startHold(e) {
   if (holding) return;
   holding = true; ptt.classList.add("hot"); ptt.textContent = "LISTENING…";
   try {
+    await unlockAudio();
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const t = mime();
     chunks = [];
@@ -132,10 +149,20 @@ async function endHold(e) {
     const r = await fetch("/utterance", { method: "POST", body: blob, headers: { "Content-Type": blob.type || "audio/mp4" } });
     if (!r.ok) { msg.textContent = "Desk error " + r.status; ptt.textContent = "HOLD TO TALK"; return; }
     const buf = await r.arrayBuffer();
-    const url = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
-    out.src = url;
-    await out.play();
-    msg.textContent = "Hold to talk";
+    if (!buf.byteLength) { msg.textContent = "No audio came back. You should still hear the PC."; ptt.textContent = "HOLD TO TALK"; return; }
+    await unlockAudio();
+    if (actx) {
+      const decoded = await actx.decodeAudioData(buf.slice(0));
+      const src = actx.createBufferSource();
+      src.buffer = decoded;
+      src.connect(actx.destination);
+      src.start();
+    } else {
+      const url = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
+      out.src = url;
+      await out.play();
+    }
+    msg.textContent = "Speaking on this phone";
   } catch (err) {
     msg.textContent = "Send failed: " + err;
   }

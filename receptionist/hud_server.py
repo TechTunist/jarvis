@@ -139,8 +139,12 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.dumps(_state).encode()
             self._send(body, "application/json")
             return
+        ua = (self.headers.get("User-Agent") or "").lower()
+        mobile = any(s in ua for s in ("iphone", "ipad", "ipod", "android", "mobile"))
         if path in ("/", "/index.html"):
-            target = HUD_DIR / "index.html"
+            target = HUD_DIR / ("phone.html" if mobile else "index.html")
+            if mobile:
+                print("[hud] serving phone UI to", ua[:80], flush=True)
         elif path in ("/phone", "/phone.html"):
             target = HUD_DIR / "phone.html"
         else:
