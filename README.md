@@ -121,7 +121,13 @@ The iPhone **cannot** run `grok.exe` or CUDA Whisper. “Jarvis in my pocket” 
 2. **Official Grok iOS app** — not this Jarvis (no HUD, no vault, no front-desk/workshop split).  
 3. **Native app + xAI Voice API** — possible later, extra bill, still not Grok Build-on-disk unless workers stay at home.
 
-Smallest next step: HUD + PTT page on the same Wi‑Fi as the PC, then Tailscale.
+### iPhone on the PC Wi‑Fi hotspot (works now)
+
+The PC can stay on **ethernet**. Turn on **Windows Mobile Hotspot**, join it from the iPhone, then in Safari open the `https://192.168.137.1:8791/phone` URL Talk prints (the hotspot address is often `192.168.137.1`).
+
+Safari will warn about the self-signed certificate: **Advanced → Visit this website**. Allow the microphone. Hold the gold button, speak, release. Audio comes back on the phone; the HUD follows listening / thinking / speaking.
+
+The PC must be running Talk. Whisper and Grok still run on the PC; the phone is only mic, speaker, and face.
 
 ## Single-board computers
 

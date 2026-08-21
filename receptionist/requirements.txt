@@ -8,3 +8,4 @@ nvidia-cublas-cu12
 nvidia-cuda-runtime-cu12
 nvidia-cuda-nvrtc-cu12
 nvidia-cudnn-cu12
+cryptography>=43.0.0

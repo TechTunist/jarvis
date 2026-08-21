@@ -26,7 +26,12 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
-from hud_server import set_state as hud_state, start_hud, stop_hud  # noqa: E402
+from hud_server import (  # noqa: E402
+    incoming_jobs,
+    set_state as hud_state,
+    start_hud,
+    stop_hud,
+)
 GROK = Path.home() / ".grok" / "bin" / "grok.exe"
 EDGE_VOICE = "en-GB-RyanNeural"
 LOCK = HERE / "talk.pid"
@@ -489,6 +494,84 @@ def transcribe(pcm) -> str:
     return "".join(s.text for s in list(segments)).strip()
 
 
+def decode_upload(data: bytes, content_type: str):
+    """iPhone MediaRecorder blob -> float32 mono 16 kHz for Whisper."""
+    import numpy as np
+    import tempfile
+
+    if FFMPEG is None:
+        raise RuntimeError("ffmpeg.exe not found")
+    suffix = ".mp4"
+    low = (content_type or "").lower()
+    if "webm" in low:
+        suffix = ".webm"
+    elif "wav" in low:
+        suffix = ".wav"
+    elif "mpeg" in low or "mp3" in low:
+        suffix = ".mp3"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        f.write(data)
+        path = f.name
+    try:
+        proc = subprocess.run(
+            [
+                str(FFMPEG),
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                path,
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-f",
+                "s16le",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=True,
+        )
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    pcm = np.frombuffer(proc.stdout, dtype=np.int16)
+    if pcm.size == 0:
+        raise RuntimeError("could not decode phone audio")
+    return pcm.astype(np.float32) / 32768.0
+
+
+def handle_phone_job(job, brain, mouth: Mouth) -> None:
+    try:
+        hud_state("listening")
+        pcm = decode_upload(job.data, job.content_type)
+        if getattr(pcm, "size", 0) < 1600:
+            job.finish(error="too short")
+            hud_state("idle")
+            return
+        t0 = time.perf_counter()
+        text = transcribe(pcm)
+        stt_ms = round((time.perf_counter() - t0) * 1000)
+        log(f"[phone] {text!r}  (stt {stt_ms}ms)")
+        if not text:
+            job.finish(error="empty transcript")
+            hud_state("idle")
+            return
+        mouth._capture = []
+        one_turn(brain, mouth, text, stt_ms=stt_ms)
+        mp3 = b"".join(mouth._capture or [])
+        mouth._capture = None
+        job.finish(text=text, mp3=mp3)
+        hud_state("idle")
+    except Exception as exc:
+        log(f"[phone] {exc}")
+        mouth._capture = None
+        job.finish(error=str(exc))
+        hud_state("idle")
+
+
 def record_held(is_held, samplerate=16000):
     import numpy as np
     import sounddevice as sd
@@ -511,6 +594,7 @@ class Mouth:
         self._voice_name = ""
         self._out = None
         self._last_out = 0.0
+        self._capture: list[bytes] | None = None
         self.last_start: float | None = None
         if kind == "sapi":
             self._init_sapi()
@@ -660,6 +744,8 @@ class Mouth:
                     if ev["type"] == "audio" and proc.stdin:
                         proc.stdin.write(ev["data"])
                         proc.stdin.flush()
+                        if self._capture is not None:
+                            self._capture.append(ev["data"])
             finally:
                 try:
                     if proc.stdin:
@@ -857,8 +943,15 @@ def run_talk(brain, mouth: Mouth, stt: str) -> None:
         return
     state = {"down": False, "quit": False}
     start_ptt_listener(state)
-    log("waiting for Home...")
+    log("waiting for Home (or iPhone on the PC hotspot)...")
     while not state["quit"]:
+        try:
+            job = incoming_jobs.get_nowait()
+        except queue.Empty:
+            job = None
+        if job:
+            handle_phone_job(job, brain, mouth)
+            continue
         if not state["down"]:
             time.sleep(0.02)
             continue

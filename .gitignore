@@ -8,6 +8,7 @@
 receptionist/talk.pid
 receptionist/agent.stderr.log
 receptionist/.venv/
+receptionist/certs/
 
 # Research clones and old Hermes glue (not this product)
 *-explore/

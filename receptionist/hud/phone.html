@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>J.A.R.V.I.S.</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #02060c; overflow: hidden; touch-action: none; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #ptt {
+      position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      width: min(86vw, 420px); height: 72px;
+      border: 1px solid rgba(0, 220, 255, 0.65);
+      background: rgba(0, 30, 50, 0.75);
+      color: #7fe9ff; font: 18px Consolas, monospace; letter-spacing: 0.12em;
+      border-radius: 8px; z-index: 5;
+    }
+    #ptt.hot { background: rgba(180, 90, 0, 0.85); color: #ffd27a; border-color: #ffb020; }
+    #msg {
+      position: fixed; left: 50%; bottom: calc(112px + env(safe-area-inset-bottom));
+      transform: translateX(-50%); width: 90vw; text-align: center;
+      color: rgba(127, 233, 255, 0.7); font: 13px Consolas, monospace; z-index: 5;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="msg">Join the PC hotspot. Hold the button. Allow mic.</div>
+<button id="ptt" type="button">HOLD TO TALK</button>
+<audio id="out" playsinline></audio>
+<script>
+const C = document.getElementById("c");
+const X = C.getContext("2d");
+const ptt = document.getElementById("ptt");
+const msg = document.getElementById("msg");
+const out = document.getElementById("out");
+let W = 0, H = 0, t0 = performance.now();
+const hud = { state: "idle", level: 0, line: "", name: "J.A.R.V.I.S." };
+let rec = null, chunks = [], holding = false;
+
+function resize() { W = C.width = innerWidth; H = C.height = innerHeight; }
+addEventListener("resize", resize); resize();
+
+async function poll() {
+  try { Object.assign(hud, await (await fetch("/state", { cache: "no-store" })).json()); }
+  catch (_) {}
+}
+setInterval(poll, 80); poll();
+
+function col(state) {
+  if (state === "listening") return [255, 176, 32];
+  if (state === "thinking") return [80, 220, 255];
+  if (state === "speaking") return [0, 229, 255];
+  return [0, 160, 200];
+}
+function ring(cx, cy, r, a, w, rgb, spin) {
+  X.save(); X.translate(cx, cy); X.rotate(spin);
+  X.beginPath(); X.arc(0, 0, r, a, a + Math.PI * 1.4);
+  X.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.85)`; X.lineWidth = w; X.stroke();
+  X.beginPath(); X.arc(0, 0, r, a + Math.PI * 1.55, a + Math.PI * 1.95); X.stroke();
+  X.restore();
+}
+function hex(cx, cy, r, rgb, a) {
+  X.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const ang = Math.PI / 6 + i * Math.PI / 3;
+    const x = cx + Math.cos(ang) * r, y = cy + Math.sin(ang) * r;
+    i ? X.lineTo(x, y) : X.moveTo(x, y);
+  }
+  X.closePath(); X.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`; X.lineWidth = 1.5; X.stroke();
+}
+function label(text, x, y, size, rgb, a = 0.9) {
+  X.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
+  X.font = `${size}px Consolas, monospace`; X.textAlign = "center"; X.textBaseline = "middle";
+  X.fillText(text, x, y);
+}
+function draw(now) {
+  const t = (now - t0) / 1000, rgb = col(hud.state);
+  X.fillStyle = "#02060c"; X.fillRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2 - 24;
+  const pulse = hud.state === "speaking" ? 0.75 + 0.25 * Math.sin(t * 20)
+    : hud.state === "listening" ? 0.7 + 0.3 * Math.sin(t * 8)
+    : hud.state === "thinking" ? 0.6 + 0.4 * Math.sin(t * 12)
+    : 0.5 + 0.5 * Math.sin(t * 1.6);
+  const spin = hud.state === "thinking" ? t * 2.2 : hud.state === "listening" ? -t * 1.4 : t * 0.35;
+  for (let i = 0; i < 5; i++) ring(cx, cy, 70 + i * 32 + pulse * 6, spin + i * 0.5, 1.2, rgb, spin * 0.15);
+  hex(cx, cy, 46 + pulse * 8, rgb, 0.9);
+  X.beginPath(); X.arc(cx, cy, 8 + pulse * 4, 0, Math.PI * 2);
+  X.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${0.55 + pulse * 0.4})`; X.fill();
+  label(hud.name, cx, 44, 22, rgb);
+  label((hud.state || "idle").toUpperCase(), cx, H - 150, 16, rgb);
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+function mime() {
+  const opts = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/aac"];
+  return opts.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+}
+
+async function startHold(e) {
+  e.preventDefault();
+  if (holding) return;
+  holding = true; ptt.classList.add("hot"); ptt.textContent = "LISTENING…";
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const t = mime();
+    chunks = [];
+    rec = t ? new MediaRecorder(stream, { mimeType: t }) : new MediaRecorder(stream);
+    rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+    rec.start(200);
+    msg.textContent = "Release to send";
+  } catch (err) {
+    holding = false; ptt.classList.remove("hot"); ptt.textContent = "HOLD TO TALK";
+    msg.textContent = "Mic blocked. Use https, allow microphone. " + err;
+  }
+}
+
+async function endHold(e) {
+  e.preventDefault();
+  if (!holding || !rec) return;
+  holding = false; ptt.classList.remove("hot"); ptt.textContent = "THINKING…";
+  const recNow = rec;
+  rec = null;
+  await new Promise((res) => { recNow.onstop = res; recNow.stop(); recNow.stream.getTracks().forEach((tr) => tr.stop()); });
+  const blob = new Blob(chunks, { type: recNow.mimeType || "audio/mp4" });
+  if (blob.size < 800) { msg.textContent = "Too short"; ptt.textContent = "HOLD TO TALK"; return; }
+  msg.textContent = "Sending…";
+  try {
+    const r = await fetch("/utterance", { method: "POST", body: blob, headers: { "Content-Type": blob.type || "audio/mp4" } });
+    if (!r.ok) { msg.textContent = "Desk error " + r.status; ptt.textContent = "HOLD TO TALK"; return; }
+    const buf = await r.arrayBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
+    out.src = url;
+    await out.play();
+    msg.textContent = "Hold to talk";
+  } catch (err) {
+    msg.textContent = "Send failed: " + err;
+  }
+  ptt.textContent = "HOLD TO TALK";
+}
+
+ptt.addEventListener("touchstart", startHold, { passive: false });
+ptt.addEventListener("touchend", endHold, { passive: false });
+ptt.addEventListener("touchcancel", endHold, { passive: false });
+ptt.addEventListener("mousedown", startHold);
+addEventListener("mouseup", (e) => { if (holding) endHold(e); });
+
+out.addEventListener("play", () => { msg.textContent = "Speaking"; });
+</script>
+</body>
+</html>
