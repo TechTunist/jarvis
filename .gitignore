@@ -1,0 +1,34 @@
+# Python
+.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Talk runtime
+receptionist/talk.pid
+receptionist/agent.stderr.log
+receptionist/.venv/
+
+# Research clones and old Hermes glue (not this product)
+*-explore/
+fullstack-agent-explore/
+ai-memory-vault-explore/
+ai-visualizer-explore/
+backtalk-explore/
+barehands-explore/
+scripts/
+start-jarvis.cmd
+start-jarvis.ps1
+context/
+logs/
+
+# Secrets / local
+.env
+*.pem
+auth.json
+.grok/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
