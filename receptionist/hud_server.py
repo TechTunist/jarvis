@@ -9,6 +9,7 @@ import queue
 import socket
 import ssl
 import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -204,6 +205,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _try_firewall(port: int) -> None:
+    # Windows only: allow iPhone / LAN clients through the PC firewall.
+    if sys.platform != "win32":
+        return
     subprocess.run(
         [
             "netsh",

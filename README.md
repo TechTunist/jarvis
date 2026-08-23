@@ -7,10 +7,12 @@ This is **not** the Grok iOS app and **not** a grok.com cloud agent. Talk launch
 ## Existing features
 
 - **Push-to-talk** — hold **Home**, speak, release. Mic is closed otherwise.
-- **Local ears** — `faster-whisper` `tiny.en` on NVIDIA CUDA when available, CPU fallback.
+- **Local ears** — `faster-whisper` **base.en** by default (tiny is a speed option). CUDA when available. Whisper is primed with household names (Jak/Jack, lamp, rooms). USB/Focusrite is preferred over the laptop mic.
 - **Brain** — warm `grok agent` (default **grok-4.5**, low effort). Same SuperGrok account as Grok Build. Tools stripped on this session so the front desk answers instead of becoming a coding agent.
 - **Mouth** — Microsoft Edge neural TTS (`en-GB-RyanNeural`), streamed to speakers with a short silence preroll so the first word is not clipped. Offline fallback: Windows SAPI.
 - **HUD** — fullscreen J.A.R.V.I.S. rings in the browser (`http://127.0.0.1:8791/`). States: idle / listening / thinking / speaking. Press **F** for fullscreen.
+- **Intent gate** — local keywords (no extra Grok call). Chat stays on the desk. Search / “remember that” / later house and code go to the job board.
+- **Host workshop** — Talk spawns a worker that advertises `search`, `vault-write`, `distill`, `home`. Search uses a separate `grok -p` with web tools. The desk never gets those tools. House commands use the Home Assistant REST API on the LAN; the token stays in `~/.jarvis/secrets`, never in the vault or the Grok prompt. Unlocks, garage, and doors wait for a spoken **yes**.
 - **Single instance** — starting Talk stops a previous Talk window so you do not get two voices.
 - **No extra Grok Voice bill** — Whisper is local; Ryan is Edge TTS; Grok is SuperGrok.
 
@@ -18,8 +20,8 @@ This is **not** the Grok iOS app and **not** a grok.com cloud agent. Talk launch
 
 1. Home down → record locally.  
 2. Home up → Whisper turns audio into text on this machine. Grok never hears the raw voice.  
-3. Text is sent into the already-running `grok agent` process.  
-4. First short sentence is spoken as soon as audio chunks exist.  
+3. A **local** intent gate either sends chat to the warm `grok agent`, or enqueues a workshop job and speaks a short ack.  
+4. For search, Talk waits for the workshop and speaks the answer. Remember files a vault bullet.  
 5. HUD follows the same states.
 
 This window (Grok Build while developing) is a **separate** `grok.exe` from Jarvis. Close Talk and Jarvis’s agent dies; this chat does not.
@@ -32,8 +34,30 @@ You need: [Grok Build CLI](https://x.ai/build) (`grok login`), Python 3.12, a mi
 cd receptionist
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install -r requirements-cuda.txt
 talk.cmd
 ```
+
+CUDA wheels are optional. Skip `requirements-cuda.txt` on a machine without NVIDIA (Whisper then uses CPU).
+
+## Quick start (Ubuntu)
+
+Same Python tree as Windows. Differences are **local**: the Grok binary is `~/.grok/bin/grok` (not `grok.exe`), ffmpeg/ffplay come from apt, and CUDA pip packages are skipped if there is no GPU.
+
+```bash
+sudo apt install python3-venv python3-pip ffmpeg libportaudio2 espeak-ng
+cd receptionist
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+# only if nvidia-smi works:
+# .venv/bin/pip install -r requirements-cuda.txt
+chmod +x talk.sh
+./talk.sh
+```
+
+Push-to-talk uses **Home** via `pynput`. On Ubuntu 24.04 Wayland that often needs an **Xorg** session, or you can type (`choice 2`) / use the phone HUD. Windows SAPI is Windows-only; on Linux `--tts sapi` is espeak. Edge neural TTS is the same on both.
+
+Do not commit `.venv`, `talk.pid`, or `certs/`. Keep using one git repo on both PCs.
 
 Choose **3** for hold-Home + British neural + HUD.
 
@@ -41,33 +65,48 @@ Choose **3** for hold-Home + British neural + HUD.
 |---|---|
 | 1 | Typed only |
 | 2 | Typed + British neural |
-| 3 | Home key + Whisper + British neural + HUD |
+| 3 | Home key + **base** Whisper + British neural + HUD (recommended) |
 | 4 | Same as 3 with **grok-4.6** |
-| 5 | Home key + old Windows SAPI (offline mouth) |
+| 5 | Home key + offline TTS |
+| 6 | Home key + **tiny** Whisper (faster, sloppier) |
+| m | List microphones |
 
 Useful flags:
 
 ```bat
-.venv\Scripts\python talk.py --brain agent --model grok-4.5 --stt tiny --tts edge
+.venv\Scripts\python talk.py --brain agent --model grok-4.5 --stt base --tts edge
+.venv\Scripts\python talk.py --mic Focusrite
+.venv\Scripts\python talk.py --list-mics
 .venv\Scripts\python talk.py --no-hud
+.venv\Scripts\python talk.py --no-workshop
 .venv\Scripts\python talk.py --voice en-GB-ThomasNeural
 ```
 
-First hello after launch is slower; the brain warms during “Jarvis online.” Simple chat should land near **~2s to first word** after you release Home (hold time is not wait time). Asking the desk to search or read files is **not** this spike — those jobs belong on a workshop process later.
+First hello after launch is slower; the brain warms during “Jarvis online.” Simple chat should land near **~2s to first word** after you release Home (hold time is not wait time). Asking the desk to search or read files is **not** this spike — Talk enqueues that work and a **workshop** process runs it in the background (see [The plan](#the-plan)).
 
 ## Repository layout
 
 ```
-receptionist/
-  talk.py          Voice loop, PTT, Grok ACP client, TTS
-  hud_server.py    Local HUD HTTP server
-  hud/index.html   Iron Man–style visualisation
-  JARVIS.md        Short personality (boot notes)
-  talk.cmd         Windows menu
-  requirements.txt
+receptionist/          Voice loop, HUD, TTS (tool-free)
+memory/                Vault, job board, intent gate, host workshop
+  templates/           Seeded into ~/.jarvis/vault on first run
+  worker.py            Heartbeat + pull jobs (search, vault-write, distill)
+tests/                 unittest (no Grok, no GPU)
 ```
 
-Runtime junk (`talk.pid`, `agent.stderr.log`, `.venv`) is gitignored.
+Talk runtime (`talk.pid`, `agent.stderr.log`, `.venv`, `certs/`) is gitignored.
+
+Filing cabinet (not this git repo): **`~/.jarvis/`** or `$JARVIS_HOME` / `--data-dir`.
+
+```
+~/.jarvis/
+  vault/               Private git: BOOT.md, people/, daily/, projects/, never.md, reminders.md
+  jobs/                jobs/<id>.jsonl
+  workshops/           heartbeat JSON
+  logs/sessions/       jsonl of every turn (latency + text)
+  cache/               e.g. weather.md from the last search
+  writer.lease         one Talk at a time
+```
 
 ## Cost
 
@@ -75,51 +114,141 @@ Talking like a receptionist uses **the SuperGrok allowance you already pay for**
 
 Do **not** paste the entire memory vault into every hello. That would both cost more and make the desk slow.
 
+## Ears (mic + STT)
+
+Closed-lid laptop mics are not good enough for names like *Jak’s light*. Office Focusrite/condenser worked because the signal was clean. That is the product bar.
+
+| Source | Use |
+|---|---|
+| **USB / Focusrite / Scarlett** | Best at the desk. Talk auto-picks names matching Focusrite, Scarlett, Yeti, Rode, … Pin with `~/.jarvis/mic.json` `{"device": "Focusrite"}` or `--mic Focusrite`. |
+| **iPhone HUD** | Best “around the house” mic you already have. Safari hold-to-talk; Whisper still runs on the PC. |
+| **Laptop analog (ALC…)** | Last resort. Lid closed = muffled, Whisper invents *Job is*, *jack knife*, *Jack’s night*. |
+
+Software side (does not replace a real mic):
+
+- Default STT is **base.en**, not tiny (choice 6 if you need speed).
+- Whisper gets an `initial_prompt` / hotwords from the vault and HA entity names (`Jak`, `Jack`, `Lamp`, …).
+- Too-quiet clips are rejected: “I didn’t catch that, sir.” instead of a hallucinated command.
+- `vad_filter` on, no stitching onto the previous (wrong) sentence.
+
+List devices: `./talk.sh` choice **m**, or `.venv/bin/python talk.py --list-mics`.
+
 ## Memory and persistence (today vs intended)
 
-**Today:** personality is a short system prompt plus `JARVIS.md`. The live Grok process forgets when Talk closes. That is intentional for speed.
+**Today:** Talk seeds `~/.jarvis/vault` on first run. The receptionist **loads only a small boot bundle** (`BOOT.md`, household, cached weather, reminders, today/yesterday stubs, never — capped at 4000 characters) into the system prompt. It still has **no tools**. A local intent gate enqueues search / remember / distill; the host workshop is a **separate** grok process with web tools. “Remember I…” files `people/_household.md`. “Remind me at 8pm…” files `vault/reminders.md`; if Talk is still running at that time, he will mention it. Each turn is appended to `logs/sessions/YYYY-MM-DD.jsonl`. On close, a **header-only** daily stub is written (no transcript dump) and a distill job files durable facts. Closing Talk does **not** delete the vault. The live Grok chat still dies with the process — that is intentional for speed.
 
-**Intended:** memory is **markdown on disk**, not an infinite chat.
+**Intended:** extra notes read **on demand** (not stuffed into every hello). Laptop/office workshops for `shell` / CAD. A Pi-side HA proxy so the office never holds the house token. The vault should get a **private git remote**.
 
-- A small **boot file** (who Jarvis is, how to talk to you, path to the vault).
-- A **vault** of notes: you, projects, decisions, daily logs, “never do X.”
-- Each hello loads only the boot file (and maybe yesterday’s line). Extra notes are read **on demand**.
-- After a session, Jarvis **writes** what changed. The pile grows; tokens per hello stay roughly flat.
+## Home Assistant (same LAN)
 
-Closing Talk must not delete the vault. The window is the phone call; the folder is the filing cabinet.
+The Pi is `http://homeassistant.local:8123`. That is enough from this laptop. There is **no** outside-network API key yet; you do not need one until Talk moves off this LAN. You **do** need a **long-lived access token** (HA local auth):
 
-## Persistence across PC, Pi, Jetson, and iPhone
+1. Open HA → profile (bottom left) → **Security** → **Long-lived access tokens** → Create Token (`jarvis`).
+2. Save it as one line in `~/.jarvis/secrets/ha.token` (never the vault, never git).
+3. Check from the **git repo** (not from `~/.jarvis`):
 
-You do **not** need a mystery “cloud brain.” You need **one copy of the files** every host can read, and **one live Talk process** (or a clearly primary one) so two desks do not edit the vault at once.
+```bash
+cd ~/jarvis    # or wherever you cloned this project
+./ha.sh --check
+./ha.sh --entities
+```
 
-Recommended source of truth:
+Lights run immediately. Unlocks, garage, and doors: Jarvis asks, you say **yes**. Token is read only by the host workshop, never injected into the desk prompt.
 
-1. **This GitHub repo** for code + `JARVIS.md` / personality templates.  
-2. **A private GitHub repo (or a private folder in this repo later)** for the vault: profile, projects, daily notes, interaction logs. Plain markdown; no secrets in git (passwords stay in a password manager).  
-3. **One always-on host** (home PC or Pi 5 / Orin) runs Talk and `grok agent`.  
-4. **Other devices are clients or clones**, not a second independent Jarvis.
+Edit `~/.jarvis/vault/BOOT.md` (keep it small). Speech rules and “no tools” stay in code so a vault edit cannot give the desk a shell. One Talk at a time: `writer.lease` warns if another host already holds it.
 
-| Device | Role | What syncs |
+```bash
+python -m unittest discover -s tests
+```
+
+## The plan
+
+**Decision: Iron Man-shaped Jarvis.** One always-on receptionist, reachable at home and at the office, that runs the house, remembers the household in markdown, and dispatches workshop jobs. Not a new Talk process on whatever laptop is open. Not a brain in another town.
+
+Tony’s JARVIS is one process with many endpoints (suit, phone, lab, house). That *is* doable. The dumb version was parking that process on the **office** Jetson while Home Assistant, the family, and the future room mics are at **home**. Always-on lives **at home**, next to the house.
+
+### How close to the movie
+
+| Movie JARVIS | This project | Honest limit |
 |---|---|---|
-| Windows PC | Workshop + optional Talk | Git pull/push vault; local `grok` |
-| Pi 5 / Orin Nano | Always-on receptionist | Same git vault; local `grok` CLI (Linux ARM) |
-| iPhone | Eyes / ears / mouth | No vault clone required; talks **to the host** over the LAN or Tailscale |
+| One presence, everywhere | **One Talk process** + many clients (phone, laptop HUD, office HUD, later room mics) | Not a new instance per machine. Live chat is one session. |
+| Always on | Always-on **home** host (Pi 5 or Orin moved home) | If that box or home internet is down, Jarvis is down. |
+| Talk in the workshop *and* at home | Tailscale: office/phone are mics + speakers + HUD | ~2s hellos, not overlapping banter while he is mid-sentence. Push-to-talk until wake word exists. |
+| Runs the house | Home Assistant via a **local proxy** (token never in Jarvis) | Confirm unlocks/garage out loud. Not cinematic whole-house AI — scenes and entities you actually expose. |
+| Knows the people | Markdown **vault** + later **speaker ID** → per-person vault | Saves *relevant* facts, not a transcript of every hour. A cold or two voices at once will fool ID. |
+| Learns continuously | After turns, a worker **distills** into the vault (decisions, preferences, “never do X”). Boot file stays small | Will miss things nobody wrote down. Will not become omniscient. |
+| Ceiling mics + “Jarvis, …” | **Later.** Local wake word on the home box, then the usual Whisper path | Far-field audio is the hard hardware problem. TV and kids will false-trigger. V1 stays hold-to-talk / phone HUD. |
+| Suit, holograms, perfect hearing | HUD in a browser; speakers you already own | No suit. No AR table. Tiny.en will mangle names. Edge TTS will not sing. |
+| Diagnoses and upgrades himself | **Self-maintenance job**: read this repo + logs + vault, propose a patch, run tests, ask you | Not unbounded recursive self-improvement. Talk does not edit the process that is speaking. You merge. |
 
-**Do not sync** `~/.grok/sessions/` between machines (session logs, machine-specific). **Do sync** vault markdown and `JARVIS.md`.
+That is about as close as a SuperGrok + files + HA house gets without pretending. The 2s tool-free desk is the movie “yes, sir.” The vault is the movie “I remember.” The always-on home box is the movie “I’m here.” Workshop agents are the movie lab hands.
 
-If two hosts are up, pick a **primary** (the Pi at home). The PC is for Grok Build work and, when you are at the desk, Talk can run there instead — not both writing memory at once.
+### One brain, many faces
 
-iCloud/Dropbox on the vault folder can work for a single writer. Git is better: history, conflict visibility, and the same “notes as memory” model on every OS. Tailscale (or similar) is how the phone reaches the host without opening router ports.
+| Place | Machine | Role |
+|---|---|---|
+| **Home** | Always-on host (Pi 5, or **move the Orin here**) | **The** receptionist + host workshop + vault writer + HA client + future wake/mics |
+| **Home** | Home Assistant | House. Token stays here. Same LAN as Talk. |
+| **Home** | Laptop | Client (HUD/mic) + **workshop** for repos on that disk |
+| **Office** | Windows PC | Client over Tailscale + **workshop** (Grok Build, Ableton, Fusion) |
+| **Office** | Jetson, if it stays there | **Not** the receptionist. Spare Whisper/workshop only — or bring it home. |
+| Pocket | Phone | Client: mic, speaker, HUD |
 
-Phone STT (Apple speech) can replace CUDA Whisper when you are mobile; Grok still runs on the host. The HUD is already a webpage — open it on the iPhone when the host is reachable.
+One live Talk. Starting Talk on a laptop because it is convenient is a **dev fallback**, not the product. Two Talks = two Jarvises.
+
+### Always-on, house, memory
+
+- Talk stays **tool-free** (~2s). Search, Imagine, vault writes, HA, Grok Build are **background jobs**.
+- The live `grok agent` can stay warm (movie continuity). It must **not** grow forever: distill into markdown, keep the boot file tiny, or cost and latency explode. Closing Talk still must not delete the vault.
+- HA is always reachable because Talk is in the **same house**. From the office you still talk to home Jarvis; lights still work. Confirm dangerous actions out loud.
+- Speaker ID (later) loads that person’s vault. Family context is files, not “the model just knows.”
+- Prefetch (weather, calendar, headlines) into a small cache so common facts need no job.
+
+### Hands stay on the machine that has the files
+
+Talking to Jarvis is not “run Grok Build on the always-on box.” Laptop/PC workshops **dial in**, advertise caps, pull jobs, run tools **locally**.
+
+Jobs name a capability, not a machine. Dispatcher on the home host picks a live worker. Cloud tools (search, Imagine) run on the home host. Coding/CAD run only where advertised. Presence (which HUD you spoke from) is the default for coding. If nobody is signed in, say so — do not edit files on the Pi.
+
+### Self-maintenance (not recursive god-mode)
+
+Jarvis can work on **this repo** the same way he works on any other project: a workshop Grok Build job on the machine that has the checkout (usually the laptop). The receptionist never rewrites the Python that is currently talking.
+
+What is actually useful (Iron Man “I’ve run a diagnostic”):
+
+1. **Telemetry in the vault / logs** — latency per stage (already in Talk), failed STT, jobs that hung, “you asked for X and I could not.” Distill that the same way as household facts.
+2. **He talks to you first** — “Whisper is slow on the laptop; we could try phone STT. Or I can add a test for the HUD phone path. Shall I?”
+3. **Workshop patches on a branch**, runs tests, reports.
+4. **You say yes.** Merge, then restart Talk. No auto-commit to `main`, no restarting the live desk from under itself.
+
+What is **not** the plan: a loop that edits himself all night, measures, edits again, unsupervised. There are no tests in this repo yet. Without tests and a human gate he will break the 2s loop and burn SuperGrok. “Improve the codebase from how he is used” is **ops notes → proposal → patch → test → you.** Same Grok Build you already use; the receptionist is just how you ask.
+
+Do this after vault + workshop agents exist, and after a small test suite exists (latency bench, HUD smoke, job-board dry run). Until then, *you* and a Grok Build session are the self-improvement loop — which is how this file got here.
+
+### Wake word and house mics (not v1)
+
+V1 is push-to-talk and the phone HUD. Always-listening is a *later house feature*: wake phrase detected **locally** on the home box, then record and transcribe as today. Grok still never gets raw audio. This stays off until PTT, HA, and the vault work. It is not a forever ban; it is not day one.
+
+### Build order
+
+1. Keep Talk tool-free and on the ~2s path (today).
+2. Markdown vault + git + **distill** — boot bundle, session jsonl, daily stub, job board, host workshop (search / vault-write / distill) are in. Laptop `shell` workers and on-demand vault reads are next.
+3. Phone HUD over LAN, then Tailscale (first “everywhere” endpoint). Prove iPhone → current Talk host.
+4. **HA on the LAN** — host workshop `home` cap talks to `homeassistant.local:8123`. Token in `~/.jarvis/secrets/ha.token`. Confirm unlocks/garage/doors out loud. A Pi-side proxy (token never leaves home) is what the office needs later; not required on this laptop.
+5. **Always-on Talk at home** (Pi 5, or move the Orin). Host workshop already runs next to Talk; keep it there.
+6. Workshop agents: home laptop, then office PC.
+7. Speaker ID + per-person vaults.
+8. House mics + local wake word.
+9. Small **test suite** (bench, HUD smoke), then self-maintenance jobs on this repo (propose → test → you merge).
+10. Emotion as a prompt hint. Per-app runners (Ableton, Fusion) last.
 
 ## Mobile (iPhone)
 
 The iPhone **cannot** run `grok.exe` or CUDA Whisper. “Jarvis in my pocket” means:
 
-1. **Remote to the home host (the unique product)** — HUD in Safari, hold-to-talk, audio back. Host must be on. Tailscale for away-from-home. Same SuperGrok, same vault.  
+1. **Remote to the home Talk host (the unique product)** — HUD in Safari, hold-to-talk, audio back. Always-on box must be up. Tailscale from the office or the road. Same SuperGrok, same vault.  
 2. **Official Grok iOS app** — not this Jarvis (no HUD, no vault, no front-desk/workshop split).  
-3. **Native app + xAI Voice API** — possible later, extra bill, still not Grok Build-on-disk unless workers stay at home.
+3. **Native app + xAI Voice API** — possible later, extra bill, still not Grok Build-on-disk unless a workshop is signed in on the machine that has the files.
 
 ### iPhone on the PC Wi‑Fi hotspot (works now)
 
@@ -140,26 +269,24 @@ Grok (the model) is in the cloud. The GPU on the 3060 is mainly for **Whisper**.
 | **Jetson Nano (2019)** | Do not use. 4GB, old stack; it would fight you. |
 | **Pi 4** | Too tight; hellos would feel like the slow spike days. |
 
-Prove iPhone → this PC first, then move Talk to a Pi 5 / Orin left on at home. Keep the Windows PC as the **workshop** (Grok Build, Imagine, heavy files).
+Prove iPhone → this PC first, then move **Talk + host workshop** to an **always-on box at home** (Pi 5, or bring the Orin home). The office PC and the home laptop are **hands** (workshop agents) and HUD clients, not extra receptionists. The office Jetson is the wrong place for the house brain. Imagine and web search are cloud Grok tools; they do not need the 3060.
 
-## Future features
+## Later extras
 
-- **Markdown memory vault** — profile, projects, daily notes, jobs; boot small, fetch on demand.  
-- **Workshop process** — Grok Build / grok-4.6 / Imagine in the **background**; receptionist only starts/checks jobs. “Make an animation” while you still chat. Artifacts land in a local `out/` folder.  
-- **Job board** — `jobs/<id>.jsonl` so “what’s happening?” is a file read, including a short view of worker reasoning.  
-- **Home Assistant** — lights/scenes as a **fast** desk tool, not a coding agent turn. Confirm unlocks/garage out loud.  
-- **iPhone client** — PTT + HUD over LAN/Tailscale.  
-- **Always-on host** — Pi 5 or Orin Nano running Talk; PC for heavy work.  
-- **Synced vault** — private git (or one-writer Tailscale folder) so personality and projects follow you across devices.  
-- **Richer HUD** — optional custom face, waveform from live TTS PCM.  
+Roadmap is [The plan](#the-plan). Cosmetic after that:
+
+- **Richer HUD** — optional custom face, waveform from live TTS PCM.
 - **Kokoro or other local TTS** — offline mouth if Edge is unavailable.
 
 ## What this is not
 
-- Not Claude Code / fullstack-agent (that stack needs Claude).  
-- Not Hermes / OpenClaw as a harness in the middle.  
-- Not an always-listening wake-word bug.  
+- Not Claude Code / fullstack-agent (that stack needs Claude).
+- Not Hermes / OpenClaw as a harness in the middle.
 - Not a grok.com-hosted agent you instantiate in the website UI.
+- Not a new receptionist on every laptop (that is a different Jarvis each time).
+- Not always-listening **in v1** — hold-to-talk / phone until the house wake-word path exists.
+- Not movie omniscience, a suit, or holographic CAD.
+- Not unsupervised recursive self-improvement. He may propose patches to this repo; he may not merge them unattended.
 
 ## License
 

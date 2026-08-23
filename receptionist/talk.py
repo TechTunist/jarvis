@@ -22,33 +22,74 @@ import sys
 import threading
 import time
 from pathlib import Path
+from shutil import which
 
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
+ROOT = HERE.parent
+for _p in (HERE, ROOT):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 from hud_server import (  # noqa: E402
     incoming_jobs,
     set_state as hud_state,
     start_hud,
     stop_hud,
 )
-GROK = Path.home() / ".grok" / "bin" / "grok.exe"
+from memory.distill import distill_session  # noqa: E402
+from memory.ears import (  # noqa: E402
+    format_inputs,
+    list_inputs,
+    load_mic_pref,
+    pick_input,
+    transcribe_pcm,
+    vocabulary,
+)
+from memory.home import JarvisHome  # noqa: E402
+from memory.intent import maybe_enqueue  # noqa: E402
+from memory.jobs import JobBoard  # noqa: E402
+from memory.prompt import SPEECH_RULES, build_system_prompt, load_boot_notes  # noqa: E402
+from memory.session import SessionLog  # noqa: E402
+from memory.reminders import take_due  # noqa: E402
+from memory.worker import HOST_CAPS, drain_runnable, spawn_host_workshop  # noqa: E402
+from memory.workshops import WorkshopRegistry  # noqa: E402
+WIN = sys.platform == "win32"
 EDGE_VOICE = "en-GB-RyanNeural"
 LOCK = HERE / "talk.pid"
 
 
-def find_ffplay() -> Path | None:
-    from shutil import which
-
-    hits = [
-        Path(r"C:\Users\oppat\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0-full_build\bin\ffplay.exe"),
-    ]
-    w = which("ffplay")
+def find_grok() -> Path:
+    """Windows ships grok.exe; Linux/macOS use grok. PATH is a fallback."""
+    bin_dir = Path.home() / ".grok" / "bin"
+    names = ("grok.exe", "grok") if WIN else ("grok", "grok.exe")
+    for name in names:
+        p = bin_dir / name
+        if p.is_file():
+            return p
+    w = which("grok") or which("grok.exe")
     if w:
-        hits.insert(0, Path(w))
-    winget = Path.home() / "AppData/Local/Microsoft/WinGet/Packages"
-    if winget.is_dir():
-        hits.extend(winget.glob("Gyan.FFmpeg*/ffmpeg-*/bin/ffplay.exe"))
+        return Path(w)
+    return bin_dir / names[0]
+
+
+GROK = find_grok()
+
+
+def find_ffplay() -> Path | None:
+    hits: list[Path] = []
+    w = which("ffplay") or which("ffplay.exe")
+    if w:
+        hits.append(Path(w))
+    if WIN:
+        hits.append(
+            Path(
+                r"C:\Users\oppat\AppData\Local\Microsoft\WinGet\Packages"
+                r"\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe"
+                r"\ffmpeg-9.0-full_build\bin\ffplay.exe"
+            )
+        )
+        winget = Path.home() / "AppData/Local/Microsoft/WinGet/Packages"
+        if winget.is_dir():
+            hits.extend(winget.glob("Gyan.FFmpeg*/ffmpeg-*/bin/ffplay.exe"))
     for p in hits:
         if p and p.is_file():
             return p
@@ -59,16 +100,7 @@ FFPLAY = find_ffplay()
 PLAY_RATE = 24000
 PREROLL_S = 0.22
 SENTENCE_END = re.compile(r"(?<=[.!?])(?:\s+|(?=[A-Z]))")
-OVERRIDE = (
-    "You are Jarvis, a British butler receptionist at the front desk. "
-    "The FIRST sentence is at most six words and ends with a period. "
-    "A second short witty sentence may follow. "
-    "No markdown, no lists, no preamble. "
-    "You have NO tools in this session: do not read files, run commands, "
-    "or search the web. If asked for files, weather, or code, say the "
-    "workbench is not connected yet and stay brief. "
-    "Do not discuss microphones, latency, clipping, or your own voice."
-)
+OVERRIDE = SPEECH_RULES
 NO_TOOLS = (
     "Agent,run_terminal_cmd,read_file,search_replace,web_search,web_fetch,"
     "grep,list_dir,glob"
@@ -76,14 +108,13 @@ NO_TOOLS = (
 
 
 def find_ffmpeg() -> Path | None:
-    from shutil import which
-
     fp = find_ffplay()
     if fp:
-        cand = fp.with_name("ffmpeg.exe")
-        if cand.is_file():
-            return cand
-    w = which("ffmpeg")
+        for name in ("ffmpeg.exe", "ffmpeg"):
+            cand = fp.with_name(name)
+            if cand.is_file():
+                return cand
+    w = which("ffmpeg") or which("ffmpeg.exe")
     return Path(w) if w else None
 
 
@@ -105,14 +136,33 @@ def take_lock() -> None:
             old = 0
         if old and old != os.getpid():
             log(f"[talk] stopping previous receptionist pid={old}")
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(old)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            _kill_pid(old)
             time.sleep(0.4)
     LOCK.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def _kill_pid(pid: int) -> None:
+    if WIN:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        pass
+    time.sleep(0.2)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
 
 
 def drop_lock() -> None:
@@ -128,8 +178,9 @@ def drop_lock() -> None:
 class CliBrain:
     name = "cli"
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, system_prompt: str = SPEECH_RULES):
         self.model = model
+        self.system_prompt = system_prompt
         self.warm = False
 
     def start(self) -> None:
@@ -158,7 +209,7 @@ class CliBrain:
             "--max-turns",
             "1",
             "--system-prompt-override",
-            OVERRIDE,
+            self.system_prompt,
             "--output-format",
             "streaming-json",
         ]
@@ -199,8 +250,9 @@ class CliBrain:
 class AgentBrain:
     name = "agent"
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, system_prompt: str = SPEECH_RULES):
         self.model = model
+        self.system_prompt = system_prompt
         self.proc: subprocess.Popen | None = None
         self._id = 0
         self._pending: dict[int, queue.Queue] = {}
@@ -272,7 +324,7 @@ class AgentBrain:
                 "mcpServers": [],
                 "_meta": {
                     "yoloMode": True,
-                    "systemPromptOverride": OVERRIDE,
+                    "systemPromptOverride": self.system_prompt,
                 },
             },
         )
@@ -412,6 +464,9 @@ class AgentBrain:
 # ---- ears / mouth ---------------------------------------------------------
 
 _whisper = None
+_stt_prompt = ""
+_stt_hotwords = ""
+_mic: dict | None = None
 
 
 def _prepend_cuda_dlls() -> None:
@@ -479,7 +534,7 @@ def warm_stt(model: str) -> str:
         return "cpu/int8"
 
 
-def transcribe(pcm) -> str:
+def transcribe(pcm) -> tuple[str, str]:
     import numpy as np
 
     audio = np.asarray(pcm, dtype=np.float32)
@@ -490,8 +545,10 @@ def transcribe(pcm) -> str:
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     if peak > 1.5:
         audio = audio / 32768.0
-    segments, _ = _whisper.transcribe(audio, language="en", temperature=0.0)
-    return "".join(s.text for s in list(segments)).strip()
+    text, note = transcribe_pcm(
+        audio, _whisper, prompt=_stt_prompt, hotwords=_stt_hotwords
+    )
+    return text, note
 
 
 def decode_upload(data: bytes, content_type: str):
@@ -543,7 +600,7 @@ def decode_upload(data: bytes, content_type: str):
     return pcm.astype(np.float32) / 32768.0
 
 
-def handle_phone_job(job, brain, mouth: Mouth) -> None:
+def handle_phone_job(job, mouth: Mouth, utter) -> None:
     try:
         hud_state("listening")
         pcm = decode_upload(job.data, job.content_type)
@@ -552,15 +609,15 @@ def handle_phone_job(job, brain, mouth: Mouth) -> None:
             hud_state("idle")
             return
         t0 = time.perf_counter()
-        text = transcribe(pcm)
+        text, note = transcribe(pcm)
         stt_ms = round((time.perf_counter() - t0) * 1000)
-        log(f"[phone] {text!r}  (stt {stt_ms}ms)")
+        log(f"[phone] {text!r}  (stt {stt_ms}ms {note})")
         if not text:
-            job.finish(error="empty transcript")
+            job.finish(error="empty transcript" if "quiet" not in note else note)
             hud_state("idle")
             return
         mouth._capture = []
-        one_turn(brain, mouth, text, stt_ms=stt_ms)
+        utter(text, stt_ms=stt_ms)
         mp3 = b"".join(mouth._capture or [])
         mouth._capture = None
         job.finish(text=text, mp3=mp3)
@@ -577,7 +634,10 @@ def record_held(is_held, samplerate=16000):
     import sounddevice as sd
 
     chunks = []
-    with sd.InputStream(samplerate=samplerate, channels=1, dtype="float32") as stream:
+    kwargs = {"samplerate": samplerate, "channels": 1, "dtype": "float32"}
+    if _mic is not None:
+        kwargs["device"] = _mic["index"]
+    with sd.InputStream(**kwargs) as stream:
         while is_held():
             block, _ = stream.read(int(samplerate * 0.03))
             chunks.append(block.copy())
@@ -597,7 +657,31 @@ class Mouth:
         self._capture: list[bytes] | None = None
         self.last_start: float | None = None
         if kind == "sapi":
+            self._init_offline()
+
+    def _init_offline(self) -> None:
+        if WIN:
             self._init_sapi()
+        else:
+            self._init_espeak()
+
+    def _init_espeak(self) -> None:
+        import pyttsx3
+
+        self._sapi = pyttsx3.init()
+        self._voice_name = "espeak"
+        log("[mouth] offline TTS: espeak (pyttsx3)")
+
+    def _speak_offline(self, text: str) -> None:
+        if WIN:
+            if self._sapi is None:
+                self._init_sapi()
+            self._sapi.Speak(text, 0)
+            return
+        if self._sapi is None:
+            self._init_espeak()
+        self._sapi.say(text)
+        self._sapi.runAndWait()
 
     def _init_sapi(self) -> None:
         import pythoncom
@@ -646,7 +730,7 @@ class Mouth:
         if self.kind == "sapi":
             log(f"[mouth] speaking: {text}")
             self.last_start = time.perf_counter()
-            self._sapi.Speak(text, 0)
+            self._speak_offline(text)
             return
         if self.kind == "edge":
             log(f"[mouth] speaking ({self.voice}): {text}")
@@ -656,11 +740,9 @@ class Mouth:
                 if self.last_start is not None:
                     log(f"[mouth] edge playback already started ({exc})")
                     return
-                log(f"[mouth] edge failed ({exc}); falling back to SAPI")
-                if self._sapi is None:
-                    self._init_sapi()
+                log(f"[mouth] edge failed ({exc}); falling back to offline TTS")
                 self.last_start = time.perf_counter()
-                self._sapi.Speak(text, 0)
+                self._speak_offline(text)
 
     def close(self) -> None:
         if self._out is not None:
@@ -820,7 +902,13 @@ def sentences(stream):
 
 # ---- turn -----------------------------------------------------------------
 
-def one_turn(brain, mouth: Mouth, text: str, stt_ms: int | None = None) -> dict:
+def one_turn(
+    brain,
+    mouth: Mouth,
+    text: str,
+    stt_ms: int | None = None,
+    session: SessionLog | None = None,
+) -> dict:
     hud_state("thinking", text)
     t0 = time.perf_counter()
     ttfb = None
@@ -883,7 +971,122 @@ def one_turn(brain, mouth: Mouth, text: str, stt_ms: int | None = None) -> dict:
         f"sentence={row['first_sentence_ms']}ms  "
         f"audio={row['first_audio_ms']}ms  total={row['total_ms']}ms"
     )
+    if session is not None:
+        session.record(
+            text,
+            row["reply"],
+            stt_ms=row["stt_ms"],
+            ttfb_ms=row["ttfb_ms"],
+            first_sentence_ms=row["first_sentence_ms"],
+            first_audio_ms=row["first_audio_ms"],
+            total_ms=row["total_ms"],
+            model=row["model"],
+            brain=row["brain"],
+        )
     return row
+
+
+class Desk:
+    """Front desk: local intent gate, then Grok or the job board."""
+
+    def __init__(self, brain, mouth: Mouth, board: JobBoard, registry: WorkshopRegistry, session: SessionLog | None):
+        self.brain = brain
+        self.mouth = mouth
+        self.board = board
+        self.registry = registry
+        self.session = session
+        self.pending: set[str] = set()
+        self.announced: set[str] = set()
+
+    def utter(self, text: str, stt_ms: int | None = None) -> dict:
+        extra = {}
+        if self.session is not None:
+            extra["session"] = self.session.session_id
+        hit = maybe_enqueue(text, self.board, self.registry, extra=extra or None)
+        if hit is None:
+            return one_turn(self.brain, self.mouth, text, stt_ms=stt_ms, session=self.session)
+        intent, job_id = hit
+        self.pending.add(job_id)
+        log(f"[jobs] {job_id} cap={intent.cap} {text!r}")
+        hud_state("speaking", intent.ack)
+        self.mouth.say(intent.ack)
+        spoken = [intent.ack]
+        if self.session is not None:
+            self.session.record(
+                text,
+                intent.ack,
+                stt_ms=stt_ms,
+                brain="jobs",
+                model=intent.cap,
+            )
+        if intent.wait_s > 0:
+            snap = self.board.wait(job_id, timeout=intent.wait_s)
+            if snap and snap.get("event") in ("done", "error"):
+                self.announced.add(job_id)
+                self.pending.discard(job_id)
+                line = self._speak_line(snap)
+                if line:
+                    hud_state("speaking", line)
+                    self.mouth.say(line)
+                    spoken.append(line)
+                    if self.session is not None:
+                        self.session.record(
+                            f"[job {intent.cap}]",
+                            line,
+                            brain="jobs",
+                            model=intent.cap,
+                        )
+            else:
+                log(f"[jobs] {job_id} still running after {intent.wait_s:.0f}s")
+        hud_state("idle")
+        return {
+            "brain": "jobs",
+            "model": intent.cap,
+            "stt_ms": stt_ms,
+            "reply": " ".join(spoken),
+        }
+
+    def drain(self) -> None:
+        for job_id in list(self.pending):
+            snap = self.board.snapshot(job_id)
+            ev = snap.get("event")
+            if ev not in ("done", "error"):
+                continue
+            self.pending.discard(job_id)
+            if job_id in self.announced:
+                continue
+            self.announced.add(job_id)
+            line = self._speak_line(snap)
+            if not line:
+                log(f"[jobs] {job_id} {ev}")
+                continue
+            log(f"[jobs] {job_id} {ev}: {line}")
+            hud_state("speaking", line)
+            self.mouth.say(line)
+            hud_state("idle")
+            if self.session is not None:
+                self.session.record(
+                    f"[job {snap.get('cap')}]",
+                    line,
+                    brain="jobs",
+                    model=str(snap.get("cap") or ""),
+                )
+        self._speak_due_reminders()
+
+    def _speak_due_reminders(self) -> None:
+        for line in take_due(self.board.home):
+            log(f"[remind] {line}")
+            hud_state("speaking", line)
+            self.mouth.say(line)
+            hud_state("idle")
+            if self.session is not None:
+                self.session.record("[reminder]", line, brain="jobs", model="remind")
+
+    @staticmethod
+    def _speak_line(snap: dict) -> str:
+        if snap.get("event") == "error":
+            return "The workshop could not finish that, sir."
+        return str(snap.get("speak") or "").strip()
 
 
 def wait_home(held_flag: dict) -> None:
@@ -927,30 +1130,32 @@ def start_ptt_listener(state: dict) -> None:
     state["listener"] = listener
 
 
-def run_talk(brain, mouth: Mouth, stt: str) -> None:
+def run_talk(desk: Desk, stt: str) -> None:
     log("Talk: hold Home, speak, release. Esc or Ctrl-C quits. Type if --stt none.")
     hud_state("idle")
     if stt == "none":
         while True:
+            desk.drain()
             try:
                 line = input("you> ").strip()
             except (EOFError, KeyboardInterrupt):
                 break
             if not line or line.lower() in ("q", "quit", "exit"):
                 break
-            one_turn(brain, mouth, line)
+            desk.utter(line)
             hud_state("idle")
         return
     state = {"down": False, "quit": False}
     start_ptt_listener(state)
     log("waiting for Home (or iPhone on the PC hotspot)...")
     while not state["quit"]:
+        desk.drain()
         try:
             job = incoming_jobs.get_nowait()
         except queue.Empty:
             job = None
         if job:
-            handle_phone_job(job, brain, mouth)
+            handle_phone_job(job, desk.mouth, desk.utter)
             continue
         if not state["down"]:
             time.sleep(0.02)
@@ -963,13 +1168,16 @@ def run_talk(brain, mouth: Mouth, stt: str) -> None:
             log("[ptt] too short")
             hud_state("idle")
             continue
-        text = transcribe(pcm)
+        text, note = transcribe(pcm)
         stt_ms = round((time.perf_counter() - t0) * 1000)
-        log(f"[you] {text!r}  (stt {stt_ms}ms)")
+        log(f"[you] {text!r}  (stt {stt_ms}ms {note})")
         if not text:
+            if "quiet" in note:
+                log("[ears] too quiet — lid closed or wrong mic? USB or phone HUD is better.")
+                desk.mouth.say("I didn't catch that, sir.")
             hud_state("idle")
             continue
-        one_turn(brain, mouth, text, stt_ms=stt_ms)
+        desk.utter(text, stt_ms=stt_ms)
         hud_state("idle")
     log("bye")
 
@@ -1000,6 +1208,12 @@ def parse_args():
     p.add_argument("--brain", choices=("agent", "cli"), default="agent")
     p.add_argument("--model", choices=("grok-4.6", "grok-4.5"), default="grok-4.6")
     p.add_argument("--stt", choices=("none", "tiny", "base", "small"), default="none")
+    p.add_argument(
+        "--mic",
+        default=None,
+        help="input device index or name substring (Focusrite, Scarlett, …)",
+    )
+    p.add_argument("--list-mics", action="store_true", help="print capture devices and exit")
     p.add_argument("--tts", choices=("none", "sapi", "edge"), default="none")
     p.add_argument(
         "--voice",
@@ -1008,48 +1222,187 @@ def parse_args():
     )
     p.add_argument("--bench", action="store_true", help="time typed hellos, no mic")
     p.add_argument("--no-hud", action="store_true", help="do not open the Iron Man HUD")
+    p.add_argument(
+        "--no-workshop",
+        action="store_true",
+        help="do not spawn the host workshop (desk only)",
+    )
     p.add_argument("--rounds", type=int, default=3)
+    p.add_argument(
+        "--data-dir",
+        default=None,
+        help="JARVIS_HOME (default: $JARVIS_HOME or ~/.jarvis)",
+    )
     return p.parse_args()
+
+
+def open_memory(data_dir: str | None) -> tuple[JarvisHome, str, JobBoard, WorkshopRegistry]:
+    home = JarvisHome.discover(data_dir)
+    home.ensure()
+    board = JobBoard(home)
+    registry = WorkshopRegistry(home)
+    notes = load_boot_notes(home)
+    prompt = build_system_prompt(notes, workers=registry.prompt_line())
+    log(f"[memory] home={home.root} boot={len(prompt)} chars")
+    return home, prompt, board, registry
+
+
+def _wait_for_worker(registry: WorkshopRegistry, timeout: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if registry.live():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _stop_worker(proc: subprocess.Popen | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
+def _setup_ears(home: JarvisHome, args) -> None:
+    global _mic, _stt_prompt, _stt_hotwords
+    _stt_prompt, _stt_hotwords = vocabulary(home)
+    if args.stt == "none":
+        return
+    want = args.mic or load_mic_pref(home)
+    try:
+        rows = list_inputs()
+    except Exception as exc:
+        log(f"[ears] could not list mics ({exc})")
+        rows = []
+    chosen = pick_input(want=want) if rows else None
+    _mic = chosen
+    if rows:
+        log("[ears] capture devices (* in use):")
+        log(format_inputs(rows, chosen))
+    if chosen:
+        log(f"[ears] mic={chosen['index']} {chosen['name']} ({chosen['kind']})")
+        if chosen["kind"] == "builtin":
+            log(
+                "[ears] built-in mic — lid-closed laptops mangle names. "
+                "Plug in the Focusrite/USB mic, or use the phone HUD. "
+                "Pin one with ~/.jarvis/mic.json {\"device\": \"Focusrite\"}"
+            )
+    else:
+        log("[ears] no capture device listed; sounddevice default")
+    log(f"[ears] whisper vocab: {_stt_prompt[:120]}")
 
 
 def main() -> None:
     args = parse_args()
+    if args.list_mics:
+        rows = list_inputs()
+        chosen = pick_input()
+        print(format_inputs(rows, chosen) or "no input devices")
+        return
     if not GROK.is_file():
-        sys.exit(f"grok.exe missing: {GROK}")
+        sys.exit(f"grok CLI missing: {GROK}  (install Grok Build and run grok login)")
     take_lock()
-    if not args.no_hud and not args.bench:
-        start_hud(open_browser=True)
-        hud_state("idle")
-    brain = AgentBrain(args.model) if args.brain == "agent" else CliBrain(args.model)
-    mouth = Mouth(args.tts, voice=args.voice)
-    log(
-        f"starting brain={args.brain} model={args.model} stt={args.stt} "
-        f"tts={args.tts}"
-        + (f" voice={args.voice}" if args.tts == "edge" else "")
-        + "  (one mouth only — old Talk windows are closed)"
-    )
-    t0 = time.perf_counter()
-    brain.start()
-    log(f"[brain] up in {int((time.perf_counter()-t0)*1000)}ms")
-    ping = threading.Thread(target=brain.warmup, daemon=True)
-    ping.start()
-    if args.stt != "none":
-        warm_stt(args.stt)
-    if args.tts != "none":
-        t1 = time.perf_counter()
-        mouth.warm()
-        log(f"[mouth] warm in {int((time.perf_counter()-t1)*1000)}ms")
-    ping.join(timeout=90)
-    if ping.is_alive():
-        log("[brain] warmup still running — first hello may be slower")
+    home = None
+    session = None
+    board = None
+    desk = None
+    worker_proc = None
     try:
+        home, prompt, board, registry = open_memory(args.data_dir)
+        warn = home.take_lease(os.getpid())
+        if warn:
+            log(f"[memory] {warn}")
+        _setup_ears(home, args)
+        if not args.no_workshop and not args.bench:
+            try:
+                worker_proc = spawn_host_workshop(
+                    home, grok=GROK, model=args.model, parent_pid=os.getpid()
+                )
+            except OSError as exc:
+                log(f"[workshop] failed to start: {exc}")
+                worker_proc = None
+            if worker_proc is not None:
+                time.sleep(0.35)
+                if worker_proc.poll() is not None:
+                    log("[workshop] exited immediately — desk only")
+                    worker_proc = None
+                elif _wait_for_worker(registry):
+                    log(f"[workshop] pid={worker_proc.pid} caps={','.join(HOST_CAPS)}")
+                    prompt = build_system_prompt(
+                        load_boot_notes(home), workers=registry.prompt_line()
+                    )
+                else:
+                    log("[workshop] no heartbeat yet — jobs will still dispatch")
+        if not args.no_hud and not args.bench:
+            start_hud(open_browser=True)
+            hud_state("idle")
+        brain = (
+            AgentBrain(args.model, system_prompt=prompt)
+            if args.brain == "agent"
+            else CliBrain(args.model, system_prompt=prompt)
+        )
+        mouth = Mouth(args.tts, voice=args.voice)
+        log(
+            f"starting brain={args.brain} model={args.model} stt={args.stt} "
+            f"tts={args.tts}"
+            + (f" voice={args.voice}" if args.tts == "edge" else "")
+            + "  (one mouth only — old Talk windows are closed)"
+        )
+        t0 = time.perf_counter()
+        brain.start()
+        log(f"[brain] up in {int((time.perf_counter()-t0)*1000)}ms")
+        ping = threading.Thread(target=brain.warmup, daemon=True)
+        ping.start()
+        if args.stt != "none":
+            warm_stt(args.stt)
+        if args.tts != "none":
+            t1 = time.perf_counter()
+            mouth.warm()
+            log(f"[mouth] warm in {int((time.perf_counter()-t1)*1000)}ms")
+        ping.join(timeout=90)
+        if ping.is_alive():
+            log("[brain] warmup still running — first hello may be slower")
         if args.bench:
             run_bench(brain, mouth, args.rounds)
         else:
-            run_talk(brain, mouth, args.stt)
+            session = SessionLog.start(home)
+            desk = Desk(brain, mouth, board, registry, session)
+            run_talk(desk, args.stt)
     finally:
-        brain.close()
-        mouth.close()
+        if session is not None and board is not None:
+            session.close()
+            dest = distill_session(session, board=board)
+            if dest:
+                log(f"[memory] daily note {dest}")
+            worker_alive = worker_proc is not None and worker_proc.poll() is None
+            if worker_alive and board.active():
+                log("[jobs] waiting on workshop to finish")
+                deadline = time.monotonic() + 45
+                while time.monotonic() < deadline and board.active():
+                    time.sleep(0.4)
+            leftover = board.runnable(list(HOST_CAPS))
+            if leftover and home is not None:
+                log(f"[jobs] finishing {len(leftover)} leftover job(s) in-process")
+                try:
+                    n = drain_runnable(home, grok=GROK, model=args.model)
+                    log(f"[jobs] in-process finished {n}")
+                except Exception as exc:
+                    log(f"[jobs] in-process finish failed: {exc}")
+            if desk is not None:
+                for job_id in list(desk.pending):
+                    st = board.latest_status(job_id)
+                    log(f"[jobs] {job_id} {st}")
+        _stop_worker(worker_proc)
+        if home is not None:
+            home.drop_lease(os.getpid())
+        try:
+            brain.close()
+            mouth.close()
+        except NameError:
+            pass
         stop_hud()
         drop_lock()
 

@@ -8,7 +8,24 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-GROK = Path.home() / ".grok" / "bin" / "grok.exe"
+
+
+def find_grok() -> Path:
+    from shutil import which
+
+    bin_dir = Path.home() / ".grok" / "bin"
+    names = ("grok.exe", "grok") if sys.platform == "win32" else ("grok", "grok.exe")
+    for name in names:
+        p = bin_dir / name
+        if p.is_file():
+            return p
+    w = which("grok") or which("grok.exe")
+    if w:
+        return Path(w)
+    return bin_dir / names[0]
+
+
+GROK = find_grok()
 PROMPT = "Hello Jarvis, just saying hi."
 OVERRIDE = (
     "You are Jarvis, a British butler receptionist. "

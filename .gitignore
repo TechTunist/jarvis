@@ -23,11 +23,16 @@ start-jarvis.ps1
 context/
 logs/
 
+# Local JARVIS_HOME if you keep the vault next to this repo
+.jarvis-home/
+
 # Secrets / local
 .env
 *.pem
+*.token
 auth.json
 .grok/
+secrets/
 
 # OS
 Thumbs.db
