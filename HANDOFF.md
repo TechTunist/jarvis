@@ -26,19 +26,11 @@ Host workshop caps: `search`, `vault-write`, `distill`, `home`.
 
 If the desk says “workbench is not connected”, that usually means the **intent gate missed the utterance** (STT garbage) and the tool-free receptionist answered. The workshop can still be up. Check `~/.jarvis/logs/sessions/` and `~/.jarvis/jobs/`.
 
-## Hardware / STT (painful tonight)
+## Hardware / STT
 
-Closed-lid XPS analog mic (ALC3271) is not good enough. Office Focusrite + condenser was fine.
+**Headphones with a mic vastly improved STT at home.** That path is good enough; do not spend tomorrow on mics.
 
-Tonight’s software (does **not** replace a real mic):
-
-- Default STT is **base.en** (talk.sh choice **3**). Choice **6** is tiny (faster, sloppier).
-- Auto-prefer USB/Focusrite/Scarlett/Yeti. Pin: `~/.jarvis/mic.json` `{"device": "Focusrite"}` or `--mic Focusrite`.
-- `./talk.sh` → **m** or `talk.py --list-mics`.
-- Whisper `initial_prompt` / hotwords from vault + HA names (`~/.jarvis/cache/ha-names.txt` after the first house command).
-- Too-quiet clips: “I didn’t catch that, sir.” instead of a hallucinated command.
-
-**Use the iPhone HUD** when the lid is closed. Plug the Focusrite in at the desk.
+Closed-lid XPS analog (ALC3271) is still poor. Office Focusrite + condenser remains the gold standard. Phone HUD is the no-headset option. `--list-mics`, `~/.jarvis/mic.json`, base.en, and Whisper name hints are already in.
 
 ## How to run
 
@@ -79,12 +71,9 @@ memory/intent.py         Local classifier (no extra Grok call)
 
 ## Tomorrow — suggested order
 
-1. **Mic that actually works at home** — USB/Focusrite on the XPS, or phone HUD as the daily path. Confirm `talk.py --list-mics` shows the interface, not only ALC analog.
-2. **Prove STT on Jak’s light / lamp / living room** with that mic + **base** Whisper. If names still die, we still have a signal problem, not a classifier problem.
-3. **Imagine + Grok Build workshops** — next software slice. New caps:
-   - `imagine` on the **host** workshop (cloud Grok tools; no 3060 required).
-   - `shell` on **this laptop’s** workshop (Grok Build in the repo checkout). Desk still has no tools; it only enqueues.
-4. Later: Pi-side HA proxy (token never leaves home), always-on Talk at home, wake word.
+1. **Imagine on the host workshop.** New cap `imagine`. Desk stays tool-free: “generate / imagine / make an image of …” enqueues; the host worker runs cloud Grok Imagine (no 3060). Speak a short ack, then say when the file is ready (path under `~/.jarvis/` or a project folder — not in git). Confirm you are not putting generated blobs in this repo.
+2. **Grok Build `shell` workshop on this laptop.** Separate worker that advertises `shell` (and maybe `repo`) for the checkout on disk. “Run the tests in this repo” / “patch X” enqueues here, not on the desk and not on a Pi with no files. Human gate before merge; Talk never rewrites the process that is speaking.
+3. **Always-on receptionist at home (Pi 5).** One Talk next to HA. This laptop becomes a HUD/mic client + `shell` workshop. HA token stays on the home LAN (Pi-side proxy when the office needs it). Wake word still later.
 
 Do not put the HA token in `/home/matt/jarvis`. Do not start a second Talk.
 
