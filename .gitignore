@@ -7,6 +7,7 @@
 # Talk runtime
 receptionist/talk.pid
 receptionist/agent.stderr.log
+receptionist/router.stderr.log
 receptionist/.venv/
 receptionist/certs/
 
@@ -25,6 +26,14 @@ logs/
 
 # Local JARVIS_HOME if you keep the vault next to this repo
 .jarvis-home/
+
+# Grok Imagine stills belong in ~/.jarvis/imagine, never this checkout
+/images/
+/imagine/
+*.jpg
+*.jpeg
+*.webp
+*.gif
 
 # Secrets / local
 .env

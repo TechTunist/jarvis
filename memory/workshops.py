@@ -52,10 +52,15 @@ class WorkshopRegistry:
         return [w for w in self.online() if w.get("online")]
 
     def has_cap(self, cap: str) -> bool:
+        return cap in self.caps()
+
+    def caps(self) -> tuple[str, ...]:
+        seen: list[str] = []
         for worker in self.live():
-            if cap in (worker.get("caps") or []):
-                return True
-        return False
+            for cap in worker.get("caps") or []:
+                if cap and cap not in seen:
+                    seen.append(str(cap))
+        return tuple(seen)
 
     def prompt_line(self) -> str:
         live = self.live()

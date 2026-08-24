@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from shutil import which
 
@@ -36,6 +37,7 @@ from hud_server import (  # noqa: E402
     stop_hud,
 )
 from memory.distill import distill_session  # noqa: E402
+from memory.grokrun import NO_TOOLS  # noqa: E402
 from memory.ears import (  # noqa: E402
     format_inputs,
     list_inputs,
@@ -45,15 +47,26 @@ from memory.ears import (  # noqa: E402
     vocabulary,
 )
 from memory.home import JarvisHome  # noqa: E402
-from memory.intent import maybe_enqueue  # noqa: E402
+from memory.imagine import library_label, rescue_session_media, speak_ready  # noqa: E402
+from memory.batch import is_ping, latest_wins  # noqa: E402
+from memory.intent import HOME, HUSH, classify, maybe_enqueue, resolve_intents  # noqa: E402
+from memory.route import ROUTE_SYSTEM, ROUTE_TIMEOUT_S, roster_card  # noqa: E402
 from memory.jobs import JobBoard  # noqa: E402
 from memory.prompt import SPEECH_RULES, build_system_prompt, load_boot_notes  # noqa: E402
 from memory.session import SessionLog  # noqa: E402
 from memory.reminders import take_due  # noqa: E402
-from memory.worker import HOST_CAPS, drain_runnable, spawn_host_workshop  # noqa: E402
+from memory.worker import (  # noqa: E402
+    HOST_CAPS,
+    drain_runnable,
+    spawn_host_workshop,
+    spawn_shell_workshop,
+)
 from memory.workshops import WorkshopRegistry  # noqa: E402
 WIN = sys.platform == "win32"
-EDGE_VOICE = "en-GB-RyanNeural"
+# Closest Edge neural we can legally use: British, composed, not a celebrity clone.
+EDGE_VOICE = "en-GB-ThomasNeural"
+EDGE_RATE = "-2%"
+EDGE_PITCH = "+4Hz"
 LOCK = HERE / "talk.pid"
 
 
@@ -101,10 +114,9 @@ PLAY_RATE = 24000
 PREROLL_S = 0.22
 SENTENCE_END = re.compile(r"(?<=[.!?])(?:\s+|(?=[A-Z]))")
 OVERRIDE = SPEECH_RULES
-NO_TOOLS = (
-    "Agent,run_terminal_cmd,read_file,search_replace,web_search,web_fetch,"
-    "grep,list_dir,glob"
-)
+PROGRESS_AFTER_S = 12
+PROGRESS_LINE = "Still working on that, sir."
+BUSY_ACK = "I'm listening, sir."
 
 
 def find_ffmpeg() -> Path | None:
@@ -120,6 +132,27 @@ def find_ffmpeg() -> Path | None:
 
 FFMPEG = find_ffmpeg()
 HELLO = "Hello Jarvis, just saying hi."
+
+
+def ffmpeg_argv(*args: str) -> list[str]:
+    if FFMPEG is None:
+        raise RuntimeError("ffmpeg not found (install ffmpeg)")
+    # -nostdin: Talk also reads the TTY; ffmpeg must not steal stdin.
+    return [str(FFMPEG), "-hide_banner", "-loglevel", "error", "-nostdin", *args]
+
+
+def upload_suffix(content_type: str) -> str:
+    """iPhone MediaRecorder is usually audio/mp4 (AAC). Android often webm."""
+    low = (content_type or "").lower()
+    if "webm" in low:
+        return ".webm"
+    if "wav" in low:
+        return ".wav"
+    if "mpeg" in low or "mp3" in low:
+        return ".mp3"
+    if "aac" in low and "mp4" not in low:
+        return ".aac"
+    return ".mp4"
 
 
 def log(msg: str) -> None:
@@ -206,6 +239,8 @@ class CliBrain:
             "--always-approve",
             "--no-subagents",
             "--disable-web-search",
+            "--disallowed-tools",
+            NO_TOOLS,
             "--max-turns",
             "1",
             "--system-prompt-override",
@@ -250,9 +285,18 @@ class CliBrain:
 class AgentBrain:
     name = "agent"
 
-    def __init__(self, model: str, system_prompt: str = SPEECH_RULES):
+    def __init__(
+        self,
+        model: str,
+        system_prompt: str = SPEECH_RULES,
+        *,
+        log_path: Path | None = None,
+        client: str = "jarvis-receptionist",
+    ):
         self.model = model
         self.system_prompt = system_prompt
+        self.log_path = log_path or (HERE / "agent.stderr.log")
+        self.client = client
         self.proc: subprocess.Popen | None = None
         self._id = 0
         self._pending: dict[int, queue.Queue] = {}
@@ -262,11 +306,25 @@ class AgentBrain:
         self.warm = False
 
     def start(self) -> None:
-        slim = [
-            "--disable-web-search",
+        # grok agent stdio ignores --disallowed-tools (headless-only).
+        # dontAsk + deny rules actually block Imagine/shell. Never yolo.
+        deny = [
+            "--permission-mode",
+            "dontAsk",
             "--no-subagents",
-            "--disallowed-tools",
-            NO_TOOLS,
+            "--disable-web-search",
+            "--deny",
+            "Bash",
+            "--deny",
+            "Read",
+            "--deny",
+            "Write",
+            "--deny",
+            "Edit",
+            "--deny",
+            "Grep",
+            "--deny",
+            "WebFetch",
         ]
         base = [
             "agent",
@@ -274,21 +332,26 @@ class AgentBrain:
             self.model,
             "--effort",
             "low",
-            "--always-approve",
             "--no-leader",
             "stdio",
         ]
-        err = (HERE / "agent.stderr.log").open("ab")
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        err = self.log_path.open("ab")
         init = {
             "protocolVersion": 1,
-            "clientInfo": {"name": "jarvis-receptionist", "version": "0"},
+            "clientInfo": {"name": self.client, "version": "0"},
             "clientCapabilities": {
-                "fs": {"readTextFile": True, "writeTextFile": True},
-                "terminal": True,
+                "fs": {"readTextFile": False, "writeTextFile": False},
+                "terminal": False,
             },
         }
+        if self.proc is not None:
+            try:
+                self.proc.kill()
+            except OSError:
+                pass
         self.proc = subprocess.Popen(
-            [str(GROK), *slim, *base],
+            [str(GROK), *deny, *base],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=err,
@@ -297,33 +360,15 @@ class AgentBrain:
         )
         threading.Thread(target=self._reader, daemon=True).start()
         time.sleep(0.25)
-        try:
-            if self.proc.poll() is not None:
-                raise RuntimeError("slim grok agent exited")
-            self._rpc("initialize", init)
-        except Exception:
-            log("[brain] slim flags rejected, retrying full agent")
-            try:
-                self.proc.kill()
-            except OSError:
-                pass
-            self.proc = subprocess.Popen(
-                [str(GROK), *base],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=err,
-                cwd=str(HERE),
-                bufsize=0,
-            )
-            threading.Thread(target=self._reader, daemon=True).start()
-            self._rpc("initialize", init)
+        if self.proc.poll() is not None:
+            raise RuntimeError("tool-free grok agent exited")
+        self._rpc("initialize", init)
         result = self._rpc(
             "session/new",
             {
                 "cwd": str(HERE),
                 "mcpServers": [],
                 "_meta": {
-                    "yoloMode": True,
                     "systemPromptOverride": self.system_prompt,
                 },
             },
@@ -333,12 +378,15 @@ class AgentBrain:
             raise RuntimeError(f"session/new failed: {result!r}")
         self.warm = True
 
-    def warmup(self) -> None:
-        log("[brain] warming prompt cache...")
+    def warmup(self, text: str | None = None) -> None:
+        ping = text or "Warmup ping. Reply with the single word ready."
+        log(f"[{self.client}] warming prompt cache...")
         t0 = time.perf_counter()
-        for _ in self.ask("Warmup ping. Reply with the single word ready."):
-            pass
-        log(f"[brain] cache hot in {int((time.perf_counter()-t0)*1000)}ms")
+        self.complete(ping, timeout=30)
+        log(f"[{self.client}] cache hot in {int((time.perf_counter()-t0)*1000)}ms")
+
+    def complete(self, text: str, timeout: float = 8) -> str:
+        return "".join(self.ask(text, timeout=timeout))
 
     def close(self) -> None:
         if self.proc and self.proc.poll() is None:
@@ -416,7 +464,7 @@ class AgentBrain:
             return content.get("text") or ""
         return str(content) if content else ""
 
-    def ask(self, text: str):
+    def ask(self, text: str, timeout: float | None = None):
         while True:
             try:
                 self._updates.get_nowait()
@@ -438,7 +486,11 @@ class AgentBrain:
         )
         finished = False
         idle_after = 0.0
+        started = time.perf_counter()
         while True:
+            if timeout is not None and time.perf_counter() - started > timeout:
+                log(f"[{self.client}] ask timed out after {timeout:.0f}s")
+                break
             try:
                 msg = self._updates.get(timeout=0.05)
             except queue.Empty:
@@ -556,26 +608,13 @@ def decode_upload(data: bytes, content_type: str):
     import numpy as np
     import tempfile
 
-    if FFMPEG is None:
-        raise RuntimeError("ffmpeg.exe not found")
-    suffix = ".mp4"
-    low = (content_type or "").lower()
-    if "webm" in low:
-        suffix = ".webm"
-    elif "wav" in low:
-        suffix = ".wav"
-    elif "mpeg" in low or "mp3" in low:
-        suffix = ".mp3"
+    suffix = upload_suffix(content_type)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
         f.write(data)
         path = f.name
     try:
         proc = subprocess.run(
-            [
-                str(FFMPEG),
-                "-hide_banner",
-                "-loglevel",
-                "error",
+            ffmpeg_argv(
                 "-i",
                 path,
                 "-ac",
@@ -585,27 +624,45 @@ def decode_upload(data: bytes, content_type: str):
                 "-f",
                 "s16le",
                 "pipe:1",
-            ],
+            ),
             capture_output=True,
-            check=True,
+            check=False,
         )
     finally:
         try:
             os.unlink(path)
         except OSError:
             pass
+    if proc.returncode not in (0, None) or not (proc.stdout or b""):
+        err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:300]
+        raise RuntimeError(err or "could not decode phone audio")
     pcm = np.frombuffer(proc.stdout, dtype=np.int16)
     if pcm.size == 0:
         raise RuntimeError("could not decode phone audio")
     return pcm.astype(np.float32) / 32768.0
 
 
+def _phone_say(mouth: Mouth, line: str) -> bytes:
+    prev = mouth.hear
+    mouth.hear = False
+    mouth._capture = []
+    try:
+        mouth.say(line)
+        return b"".join(mouth._capture or [])
+    finally:
+        mouth.hear = prev
+        mouth._capture = None
+
+
 def handle_phone_job(job, mouth: Mouth, utter) -> None:
+    prev = mouth.hear
+    mouth.hear = False
     try:
         hud_state("listening")
         pcm = decode_upload(job.data, job.content_type)
         if getattr(pcm, "size", 0) < 1600:
-            job.finish(error="too short")
+            mp3 = _phone_say(mouth, "I didn't catch that, sir.")
+            job.finish(text="", mp3=mp3)
             hud_state("idle")
             return
         t0 = time.perf_counter()
@@ -613,7 +670,8 @@ def handle_phone_job(job, mouth: Mouth, utter) -> None:
         stt_ms = round((time.perf_counter() - t0) * 1000)
         log(f"[phone] {text!r}  (stt {stt_ms}ms {note})")
         if not text:
-            job.finish(error="empty transcript" if "quiet" not in note else note)
+            mp3 = _phone_say(mouth, "I didn't catch that, sir.")
+            job.finish(text="", mp3=mp3)
             hud_state("idle")
             return
         mouth._capture = []
@@ -625,8 +683,17 @@ def handle_phone_job(job, mouth: Mouth, utter) -> None:
     except Exception as exc:
         log(f"[phone] {exc}")
         mouth._capture = None
-        job.finish(error=str(exc))
+        try:
+            mp3 = _phone_say(mouth, "The phone link failed, sir.")
+            if mp3:
+                job.finish(text="", mp3=mp3)
+            else:
+                job.finish(error=str(exc)[:400])
+        except Exception:
+            job.finish(error=str(exc)[:400])
         hud_state("idle")
+    finally:
+        mouth.hear = prev
 
 
 def record_held(is_held, samplerate=16000):
@@ -647,15 +714,28 @@ def record_held(is_held, samplerate=16000):
 
 
 class Mouth:
-    def __init__(self, kind: str, voice: str = EDGE_VOICE):
+    def __init__(
+        self,
+        kind: str,
+        voice: str = EDGE_VOICE,
+        rate: str = EDGE_RATE,
+        pitch: str = EDGE_PITCH,
+    ):
         self.kind = kind
         self.voice = voice
+        self.rate = rate
+        self.pitch = pitch
         self._sapi = None
         self._voice_name = ""
         self._out = None
         self._last_out = 0.0
         self._capture: list[bytes] | None = None
         self.last_start: float | None = None
+        self._lock = threading.Lock()
+        self._cancel = threading.Event()
+        self._token = 0
+        self._ffmpeg: subprocess.Popen | None = None
+        self.hear = True
         if kind == "sapi":
             self._init_offline()
 
@@ -723,9 +803,59 @@ class Mouth:
         log("[mouth] you should hear: Jarvis online.")
         self.say("Jarvis online.")
 
+    def interrupt(self) -> None:
+        """Cut current playback so a newer command can take the mouth."""
+        self._token += 1
+        self._cancel.set()
+        proc = self._ffmpeg
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
     def say(self, text: str) -> None:
+        token = self._token
+        self._cancel.clear()
+        with self._lock:
+            if self._token != token or self._cancel.is_set():
+                return
+            self._say_locked(text, token)
+
+    def _cut(self, token: int) -> bool:
+        return self._cancel.is_set() or self._token != token
+
+    def _edge_mp3_only(self, text: str) -> None:
+        """Synthesize MP3 for the phone. Do not open the laptop speakers."""
+        chunks: list[bytes] = []
+
+        async def _run() -> None:
+            import edge_tts
+
+            comm = edge_tts.Communicate(
+                text, self.voice, rate=self.rate, pitch=self.pitch
+            )
+            async for ev in comm.stream():
+                if ev["type"] == "audio":
+                    chunks.append(ev["data"])
+
+        asyncio.run(_run())
+        if self._capture is not None:
+            self._capture.extend(chunks)
+        self.last_start = time.perf_counter()
+
+    def _say_locked(self, text: str, token: int = 0) -> None:
         self.last_start = None
         if self.kind == "none" or not text.strip():
+            return
+        if self._cut(token):
+            return
+        if not self.hear:
+            log(f"[mouth] phone-only: {text}")
+            try:
+                self._edge_mp3_only(text)
+            except Exception as exc:
+                log(f"[mouth] phone capture failed ({exc})")
             return
         if self.kind == "sapi":
             log(f"[mouth] speaking: {text}")
@@ -735,8 +865,10 @@ class Mouth:
         if self.kind == "edge":
             log(f"[mouth] speaking ({self.voice}): {text}")
             try:
-                asyncio.run(self._edge_play(text))
+                asyncio.run(self._edge_play(text, token))
             except Exception as exc:
+                if self._cut(token):
+                    return
                 if self.last_start is not None:
                     log(f"[mouth] edge playback already started ({exc})")
                     return
@@ -770,12 +902,14 @@ class Mouth:
         self._write_pcm(np.zeros(int(PLAY_RATE * PREROLL_S), dtype=np.float32))
         self._last_out = time.perf_counter()
 
-    def _write_pcm(self, samples) -> None:
+    def _write_pcm(self, samples, token: int | None = None) -> None:
         import numpy as np
 
         x = np.asarray(samples, dtype=np.float32).reshape(-1, 1)
         step = 2048
         for i in range(0, len(x), step):
+            if token is not None and self._cut(token):
+                return
             self._out.write(x[i : i + step])
         self._last_out = time.perf_counter()
 
@@ -792,14 +926,8 @@ class Mouth:
     def _mp3_to_float(self, mp3: bytes):
         import numpy as np
 
-        if FFMPEG is None:
-            raise RuntimeError("ffmpeg.exe not found")
         proc = subprocess.run(
-            [
-                str(FFMPEG),
-                "-hide_banner",
-                "-loglevel",
-                "error",
+            ffmpeg_argv(
                 "-i",
                 "pipe:0",
                 "-f",
@@ -809,7 +937,7 @@ class Mouth:
                 "-ar",
                 str(PLAY_RATE),
                 "pipe:1",
-            ],
+            ),
             input=mp3,
             capture_output=True,
             check=True,
@@ -820,7 +948,9 @@ class Mouth:
         async def _run() -> None:
             import edge_tts
 
-            comm = edge_tts.Communicate(text, self.voice, rate="+4%")
+            comm = edge_tts.Communicate(
+                text, self.voice, rate=self.rate, pitch=self.pitch
+            )
             try:
                 async for ev in comm.stream():
                     if ev["type"] == "audio" and proc.stdin:
@@ -837,17 +967,11 @@ class Mouth:
 
         asyncio.run(_run())
 
-    async def _edge_play(self, text: str) -> None:
+    async def _edge_play(self, text: str, token: int = 0) -> None:
         import numpy as np
 
-        if FFMPEG is None:
-            raise RuntimeError("ffmpeg.exe not found")
         proc = subprocess.Popen(
-            [
-                str(FFMPEG),
-                "-hide_banner",
-                "-loglevel",
-                "error",
+            ffmpeg_argv(
                 "-i",
                 "pipe:0",
                 "-f",
@@ -857,31 +981,50 @@ class Mouth:
                 "-ar",
                 str(PLAY_RATE),
                 "pipe:1",
-            ],
+            ),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
+        self._ffmpeg = proc
         threading.Thread(target=self._feed_edge, args=(text, proc), daemon=True).start()
         loop = asyncio.get_running_loop()
         self._ensure_out()
         if time.perf_counter() - self._last_out > 0.12:
-            self._write_pcm(np.zeros(int(PLAY_RATE * PREROLL_S), dtype=np.float32))
+            self._write_pcm(
+                np.zeros(int(PLAY_RATE * PREROLL_S), dtype=np.float32), token
+            )
         leftover = b""
-        while True:
-            chunk = await loop.run_in_executor(None, proc.stdout.read, 8192)
-            if not chunk:
-                break
-            leftover += chunk
-            n = (len(leftover) // 4) * 4
-            if not n:
-                continue
-            samples = np.frombuffer(leftover[:n], dtype=np.float32).copy()
-            leftover = leftover[n:]
-            if self.last_start is None:
-                self.last_start = time.perf_counter()
-            self._write_pcm(samples)
-        await loop.run_in_executor(None, proc.wait)
+        try:
+            while True:
+                if self._cut(token):
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    break
+                chunk = await loop.run_in_executor(None, proc.stdout.read, 8192)
+                if not chunk:
+                    break
+                leftover += chunk
+                n = (len(leftover) // 4) * 4
+                if not n:
+                    continue
+                samples = np.frombuffer(leftover[:n], dtype=np.float32).copy()
+                leftover = leftover[n:]
+                if self.last_start is None:
+                    self.last_start = time.perf_counter()
+                self._write_pcm(samples, token)
+            if not self._cut(token):
+                await loop.run_in_executor(None, proc.wait)
+        finally:
+            if self._ffmpeg is proc:
+                self._ffmpeg = None
+            if self._cut(token):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
 
 
 def sentences(stream):
@@ -908,15 +1051,23 @@ def one_turn(
     text: str,
     stt_ms: int | None = None,
     session: SessionLog | None = None,
+    log_text: str | None = None,
+    stop=None,
 ) -> dict:
     hud_state("thinking", text)
+    started = time.time()
     t0 = time.perf_counter()
     ttfb = None
     first_sent = None
     first_audio = None
     spoken = []
     buf = ""
+    cut = False
     for chunk in brain.ask(text):
+        if stop is not None and stop():
+            log("[desk] chat superseded")
+            cut = True
+            break
         now = time.perf_counter()
         if ttfb is None:
             ttfb = now
@@ -940,8 +1091,15 @@ def one_turn(
                 hud_state("speaking", sent)
                 mouth.say(sent)
             spoken.append(sent)
+            if stop is not None and stop():
+                log("[desk] chat superseded")
+                cut = True
+                buf = ""
+                break
+        if cut:
+            break
     tail = buf.strip()
-    if tail:
+    if tail and not cut and not (stop is not None and stop()):
         if first_sent is None:
             first_sent = time.perf_counter()
             log(f"  [{brain.model}] first sentence {int((first_sent-t0)*1000)}ms: {tail}")
@@ -954,6 +1112,24 @@ def one_turn(
             mouth.say(tail)
         spoken.append(tail)
     hud_state("idle")
+    sid = getattr(brain, "session_id", "") or ""
+    if sid:
+        from memory.imagine import VIDEO_EXT, library_root
+
+        moved = rescue_session_media(HERE, sid, since=started, slug=text)
+        if moved:
+            dest = moved[-1]
+            kind = "video" if dest.suffix.lower() in VIDEO_EXT else "still"
+            line = speak_ready(
+                dest,
+                root=library_root(kind),
+                library=library_label(kind),
+            )
+            log(f"[imagine] rescued {dest}")
+            hud_state("speaking", line)
+            mouth.say(line)
+            spoken.append(line)
+            hud_state("idle")
     total = time.perf_counter() - t0
     row = {
         "brain": brain.name,
@@ -973,7 +1149,7 @@ def one_turn(
     )
     if session is not None:
         session.record(
-            text,
+            log_text if log_text is not None else text,
             row["reply"],
             stt_ms=row["stt_ms"],
             ttfb_ms=row["ttfb_ms"],
@@ -989,46 +1165,248 @@ def one_turn(
 class Desk:
     """Front desk: local intent gate, then Grok or the job board."""
 
-    def __init__(self, brain, mouth: Mouth, board: JobBoard, registry: WorkshopRegistry, session: SessionLog | None):
+    def __init__(
+        self,
+        brain,
+        mouth: Mouth,
+        board: JobBoard,
+        registry: WorkshopRegistry,
+        session: SessionLog | None,
+        router: AgentBrain | None = None,
+    ):
         self.brain = brain
         self.mouth = mouth
         self.board = board
         self.registry = registry
         self.session = session
+        self.router = router
         self.pending: set[str] = set()
         self.announced: set[str] = set()
+        self.progressed: set[str] = set()
+        self.last_speak: str = ""
+        self.gen = 0
+        self._preempt = threading.Event()
+        self._state = threading.Lock()
 
-    def utter(self, text: str, stt_ms: int | None = None) -> dict:
-        extra = {}
-        if self.session is not None:
-            extra["session"] = self.session.session_id
-        hit = maybe_enqueue(text, self.board, self.registry, extra=extra or None)
-        if hit is None:
-            return one_turn(self.brain, self.mouth, text, stt_ms=stt_ms, session=self.session)
-        intent, job_id = hit
-        self.pending.add(job_id)
-        log(f"[jobs] {job_id} cap={intent.cap} {text!r}")
-        hud_state("speaking", intent.ack)
-        self.mouth.say(intent.ack)
-        spoken = [intent.ack]
+    def _claim_speak(self, job_id: str) -> bool:
+        """First caller may speak this job. Wait vs drain must not both talk."""
+        with self._state:
+            if job_id in self.announced:
+                return False
+            self.announced.add(job_id)
+            self.pending.discard(job_id)
+            return True
+
+    def preempt(self) -> None:
+        """A newer line arrived. Cut speech; in-flight work must not keep talking."""
+        self._preempt.set()
+        self.mouth.interrupt()
+        log("[desk] preempt")
+
+    def _preempted(self) -> bool:
+        return self._preempt.is_set()
+
+    def _stale(self, snap: dict) -> bool:
+        g = snap.get("gen")
+        if g is None:
+            return True
+        try:
+            return int(g) != self.gen
+        except (TypeError, ValueError):
+            return True
+
+    def hush(self, text: str, stt_ms: int | None = None) -> dict:
+        self.gen += 1
+        self.mouth.interrupt()
+        self._preempt.set()
+        with self._state:
+            for job_id in list(self.pending):
+                self.announced.add(job_id)
+        log("[desk] hush — older jobs stay silent")
         if self.session is not None:
             self.session.record(
-                text,
-                intent.ack,
-                stt_ms=stt_ms,
-                brain="jobs",
-                model=intent.cap,
+                text, "", stt_ms=stt_ms, brain="jobs", model="hush"
             )
+        hud_state("idle")
+        return {"reply": "", "brain": "hush"}
+
+    def _route_run(self, asked: str) -> str:
+        t0 = time.perf_counter()
+        out = ""
+        try:
+            if self.router is not None and self.router.warm:
+                out = self.router.complete(asked, timeout=ROUTE_TIMEOUT_S)
+            else:
+                from memory.grokrun import run_prompt
+
+                out = run_prompt(
+                    asked,
+                    grok=GROK,
+                    model=getattr(self.brain, "model", None) or "grok-4.5",
+                    system=ROUTE_SYSTEM,
+                    web=False,
+                    max_turns=1,
+                    timeout=ROUTE_TIMEOUT_S,
+                )
+        except Exception as exc:
+            log(f"[route] failed ({exc})")
+            out = ""
+        log(f"[route] {int((time.perf_counter() - t0) * 1000)}ms {out[:120]!r}")
+        return out or '{"caps":["chat"]}'
+
+    def utter(self, text: str, stt_ms: int | None = None) -> dict:
+        return self.handle_batch([(text, stt_ms)])
+
+    def handle_batch(self, items: list[tuple[str, int | None]]) -> dict:
+        """Answer only the latest user line. Older queued lines are dropped."""
+        items = latest_wins(items)
+        texts = [" ".join((t or "").split()) for t, _ in items]
+        texts = [t for t in texts if t and t not in ("__quit__", "__quiet__")]
+        if not texts:
+            return {"reply": ""}
+        stt_ms = next((s for _, s in items if s is not None), None)
+        text = texts[-1]
+        self._preempt.clear()
+        model = getattr(self.brain, "model", None) or "grok-4.5"
+        t_route = time.perf_counter()
+        resolved = resolve_intents(
+            text,
+            caps=self.registry.caps(),
+            roster=roster_card(self.board.home),
+            grok=GROK,
+            model=model,
+            run=self._route_run,
+        )
+        log(
+            f"[route] {int((time.perf_counter() - t_route) * 1000)}ms "
+            f"{text[:40]!r} -> {[getattr(i, 'cap', None) or getattr(i, 'kind', None) for i in resolved]!r}"
+        )
+        if any(getattr(i, "kind", "") == HUSH.kind for i in resolved):
+            return self.hush(text, stt_ms=stt_ms)
+        if self.registry.has_cap("home"):
+            from memory.ha import (
+                is_house_followup,
+                is_no,
+                is_yes,
+                pending_clarify,
+                pending_confirm,
+            )
+
+            if pending_confirm(self.board.home):
+                resolved = [
+                    HOME if (is_yes(text) or is_no(text)) else i for i in resolved
+                ]
+            if pending_clarify(self.board.home):
+                resolved = [
+                    HOME if is_house_followup(text) else i for i in resolved
+                ]
+        if self._preempted():
+            log("[desk] superseded before acting")
+            return {"reply": ""}
+        kinds = [getattr(i, "kind", "") for i in resolved]
+        if kinds and all(k == "status" for k in kinds):
+            return self.report_work(text, stt_ms=stt_ms)
+        if self.pending and is_ping(text) and not any(getattr(i, "cap", None) for i in resolved):
+            return self.report_work(text, stt_ms=stt_ms)
+        self.gen += 1
+        my_gen = self.gen
+        spoken: list[str] = []
+        extra: dict = {"gen": my_gen}
+        if self.session is not None:
+            extra["session"] = self.session.session_id
+        jobs = [(text, i) for i in resolved if getattr(i, "cap", None)]
+        chat = [
+            i
+            for i in resolved
+            if not getattr(i, "cap", None) and getattr(i, "kind", "") not in ("status", "hush")
+        ]
+        for _, intent in jobs:
+            if self._preempted():
+                log("[desk] superseded during jobs")
+                return {"reply": " ".join(s for s in spoken if s), "brain": "batch"}
+            spoken.extend(self._start_job(text, stt_ms, extra, intent=intent))
+        if chat and not jobs:
+            if self._preempted():
+                return {"reply": ""}
+            from memory.working import desk_prefix
+
+            prompt = text
+            pre = desk_prefix(self.board.home)
+            if pre:
+                prompt = pre + "\n\nMatt: " + prompt
+            row = one_turn(
+                self.brain,
+                self.mouth,
+                prompt,
+                stt_ms=stt_ms,
+                session=self.session,
+                log_text=text,
+                stop=self._preempted,
+            )
+            spoken.append(str(row.get("reply") or ""))
+        hud_state("idle")
+        return {"reply": " ".join(s for s in spoken if s), "brain": "batch"}
+
+    def _start_job(
+        self,
+        text: str,
+        stt_ms: int | None,
+        extra: dict,
+        intent=None,
+    ) -> list[str]:
+        hit = maybe_enqueue(
+            text,
+            self.board,
+            self.registry,
+            extra=extra or None,
+            intent=intent,
+            grok=GROK,
+            model=getattr(self.brain, "model", None) or "grok-4.5",
+        )
+        if hit is None:
+            missed = intent if intent is not None else classify(text)
+            line = "The workbench is not connected yet, sir."
+            log(f"[jobs] {getattr(missed, 'cap', None)} missed — workshop offline or cap down")
+            hud_state("speaking", line)
+            self.mouth.say(line)
+            if self.session is not None:
+                self.session.record(
+                    text,
+                    line,
+                    stt_ms=stt_ms,
+                    brain="jobs",
+                    model=str(getattr(missed, "cap", None) or ""),
+                )
+            return [line]
+        intent, job_id = hit
+        self.pending.add(job_id)
+        log(f"[jobs] {job_id} cap={intent.cap} gen={extra.get('gen')} {text!r}")
+        if self._preempted():
+            return []
+        hud_state("speaking", intent.ack)
+        self.mouth.say(intent.ack)
+        if self.session is not None:
+            self.session.record(
+                text, intent.ack, stt_ms=stt_ms, brain="jobs", model=intent.cap
+            )
+        if self._preempted():
+            return [intent.ack]
         if intent.wait_s > 0:
-            snap = self.board.wait(job_id, timeout=intent.wait_s)
+            snap = self.board.wait(
+                job_id, timeout=intent.wait_s, abort=self._preempted
+            )
+            if self._preempted():
+                return [intent.ack]
             if snap and snap.get("event") in ("done", "error"):
-                self.announced.add(job_id)
-                self.pending.discard(job_id)
+                if not self._claim_speak(job_id):
+                    return [intent.ack]
+                if self._stale(snap):
+                    return [intent.ack]
                 line = self._speak_line(snap)
                 if line:
+                    self.last_speak = line
                     hud_state("speaking", line)
                     self.mouth.say(line)
-                    spoken.append(line)
                     if self.session is not None:
                         self.session.record(
                             f"[job {intent.cap}]",
@@ -1036,34 +1414,90 @@ class Desk:
                             brain="jobs",
                             model=intent.cap,
                         )
-            else:
-                log(f"[jobs] {job_id} still running after {intent.wait_s:.0f}s")
-        hud_state("idle")
-        return {
-            "brain": "jobs",
-            "model": intent.cap,
-            "stt_ms": stt_ms,
-            "reply": " ".join(spoken),
-        }
+                    return [intent.ack, line]
+            log(f"[jobs] {job_id} still running after {intent.wait_s:.0f}s")
+        return [intent.ack]
 
-    def drain(self) -> None:
-        for job_id in list(self.pending):
-            snap = self.board.snapshot(job_id)
-            ev = snap.get("event")
-            if ev not in ("done", "error"):
-                continue
-            self.pending.discard(job_id)
-            if job_id in self.announced:
-                continue
-            self.announced.add(job_id)
-            line = self._speak_line(snap)
-            if not line:
-                log(f"[jobs] {job_id} {ev}")
-                continue
-            log(f"[jobs] {job_id} {ev}: {line}")
+    def report_work(self, text: str, stt_ms: int | None = None) -> dict:
+        """Answer progress from the job board — never ask the desk Grok."""
+        spoken = self.drain()
+        if spoken:
+            line = spoken[-1]
+        elif self.pending:
+            line = PROGRESS_LINE
             hud_state("speaking", line)
             self.mouth.say(line)
             hud_state("idle")
+        else:
+            line = self.board.status_line(asked=text, pending_ids=self.pending)
+            if (
+                line.startswith("Nothing")
+                and self.last_speak
+                and not re.search(
+                    r"\b(?:animation|pdf|image|picture|video|drawing|document)\b",
+                    text or "",
+                    re.I,
+                )
+            ):
+                line = self.last_speak
+            hud_state("speaking", line)
+            self.mouth.say(line)
+            hud_state("idle")
+        if self.session is not None:
+            self.session.record(
+                text, line, stt_ms=stt_ms, brain="jobs", model="status"
+            )
+        return {
+            "brain": "jobs",
+            "model": "status",
+            "stt_ms": stt_ms,
+            "reply": line,
+        }
+
+    def drain(self) -> list[str]:
+        to_say: list[tuple[str, str, dict]] = []
+        spoken: list[str] = []
+        with self._state:
+            for job_id in list(self.pending):
+                snap = self.board.snapshot(job_id)
+                ev = snap.get("event")
+                if ev not in ("done", "error"):
+                    if (
+                        ev in ("claimed", "enqueued")
+                        and job_id not in self.progressed
+                        and job_id not in self.announced
+                        and self._job_age_s(snap) >= PROGRESS_AFTER_S
+                    ):
+                        self.progressed.add(job_id)
+                        to_say.append(("progress", job_id, snap))
+                    continue
+                if job_id in self.announced:
+                    self.pending.discard(job_id)
+                    continue
+                to_say.append(("done", job_id, snap))
+        for kind, job_id, snap in to_say:
+            if kind == "done" and not self._claim_speak(job_id):
+                continue
+            if self._preempted() or self._stale(snap):
+                log(f"[jobs] {job_id} skip speak stale/preempt gen={snap.get('gen')}")
+                continue
+            if kind == "progress":
+                log(f"[jobs] {job_id} still working")
+                hud_state("speaking", PROGRESS_LINE)
+                self.mouth.say(PROGRESS_LINE)
+                hud_state("idle")
+                spoken.append(PROGRESS_LINE)
+                continue
+            line = self._speak_line(snap)
+            if not line:
+                log(f"[jobs] {job_id} {snap.get('event')}")
+                continue
+            self.last_speak = line
+            log(f"[jobs] {job_id} {snap.get('event')}: {line}")
+            hud_state("speaking", line)
+            self.mouth.say(line)
+            hud_state("idle")
+            spoken.append(line)
             if self.session is not None:
                 self.session.record(
                     f"[job {snap.get('cap')}]",
@@ -1071,13 +1505,27 @@ class Desk:
                     brain="jobs",
                     model=str(snap.get("cap") or ""),
                 )
-        self._speak_due_reminders()
+        if not self._preempted():
+            self._speak_due_reminders()
+        return spoken
 
     def _speak_due_reminders(self) -> None:
+        from memory.reminders import reminder_norm
+
+        seen: set[str] = set()
+        last = reminder_norm(self.last_speak)
+        if last:
+            seen.add(last)
         for line in take_due(self.board.home):
+            key = reminder_norm(line)
+            if key in seen:
+                log(f"[remind] skip duplicate {line!r}")
+                continue
+            seen.add(key)
             log(f"[remind] {line}")
             hud_state("speaking", line)
             self.mouth.say(line)
+            self.last_speak = line
             hud_state("idle")
             if self.session is not None:
                 self.session.record("[reminder]", line, brain="jobs", model="remind")
@@ -1087,6 +1535,17 @@ class Desk:
         if snap.get("event") == "error":
             return "The workshop could not finish that, sir."
         return str(snap.get("speak") or "").strip()
+
+    @staticmethod
+    def _job_age_s(snap: dict) -> float:
+        ts = str(snap.get("ts") or "")
+        try:
+            then = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            return max(0.0, (datetime.now(timezone.utc) - then).total_seconds())
+        except ValueError:
+            return 0.0
 
 
 def wait_home(held_flag: dict) -> None:
@@ -1116,13 +1575,22 @@ def start_ptt_listener(state: dict) -> None:
 
     def on_press(key):
         if key == keyboard.Key.home:
+            state["home_at"] = time.monotonic()
             state["down"] = True
         if key == keyboard.Key.esc:
             state["quit"] = True
 
     def on_release(key):
-        if key == keyboard.Key.home:
-            state["down"] = False
+        if key != keyboard.Key.home:
+            return
+
+        def _up() -> None:
+            # X11 key-repeat can emit press/release pairs while still holding.
+            time.sleep(0.08)
+            if time.monotonic() - float(state.get("home_at") or 0) >= 0.07:
+                state["down"] = False
+
+        threading.Thread(target=_up, daemon=True).start()
 
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.daemon = True
@@ -1130,40 +1598,132 @@ def start_ptt_listener(state: dict) -> None:
     state["listener"] = listener
 
 
+def _silence_tty():
+    """Stop Home/arrows echoing into the Talk terminal. Keep Ctrl-C."""
+    if sys.platform == "win32" or not sys.stdin.isatty():
+        return None
+    try:
+        import termios
+    except ImportError:
+        return None
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    new = list(old)
+    new[3] = new[3] & ~(termios.ECHO | termios.ECHONL | termios.ICANON)
+    termios.tcsetattr(fd, termios.TCSANOW, new)
+    return old
+
+
+def _restore_tty(old) -> None:
+    if old is None:
+        return
+    try:
+        import termios
+
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW, old)
+    except Exception:
+        pass
+
+
+def _swallow_keys(stop: threading.Event) -> None:
+    """Discard Home escape sequences so they never print or queue."""
+    if sys.platform == "win32":
+        try:
+            import msvcrt
+        except ImportError:
+            return
+        while not stop.is_set():
+            if msvcrt.kbhit():
+                msvcrt.getch()
+            else:
+                time.sleep(0.05)
+        return
+    if not sys.stdin.isatty():
+        return
+    import select
+
+    fd = sys.stdin.fileno()
+    while not stop.is_set():
+        try:
+            ready, _, _ = select.select([fd], [], [], 0.1)
+        except (OSError, ValueError):
+            return
+        if not ready:
+            continue
+        try:
+            os.read(fd, 4096)
+        except OSError:
+            return
+
+
+def _drain_loop(desk: Desk, stop: threading.Event) -> None:
+    while not stop.wait(0.4):
+        try:
+            desk.drain()
+        except Exception as exc:
+            log(f"[jobs] drain {exc}")
+
+
 def run_talk(desk: Desk, stt: str) -> None:
     log("Talk: hold Home, speak, release. Esc or Ctrl-C quits. Type if --stt none.")
     hud_state("idle")
-    if stt == "none":
-        while True:
-            desk.drain()
-            try:
-                line = input("you> ").strip()
-            except (EOFError, KeyboardInterrupt):
-                break
-            if not line or line.lower() in ("q", "quit", "exit"):
-                break
-            desk.utter(line)
-            hud_state("idle")
-        return
-    state = {"down": False, "quit": False}
-    start_ptt_listener(state)
-    log("waiting for Home (or iPhone on the PC hotspot)...")
-    while not state["quit"]:
-        desk.drain()
+    stop = threading.Event()
+    threading.Thread(target=_drain_loop, args=(desk, stop), daemon=True).start()
+    tty = None
+    if stt != "none":
+        tty = _silence_tty()
+        threading.Thread(target=_swallow_keys, args=(stop,), daemon=True).start()
+    try:
+        _run_talk_loop(desk, stt)
+    finally:
+        stop.set()
+        _restore_tty(tty)
+
+
+def _take_batch(inbox: queue.Queue, timeout: float) -> list[tuple[str, int | None]]:
+    try:
+        first = inbox.get(timeout=timeout)
+    except queue.Empty:
+        return []
+    out = [first]
+    while True:
         try:
-            job = incoming_jobs.get_nowait()
+            out.append(inbox.get_nowait())
         except queue.Empty:
-            job = None
-        if job:
-            handle_phone_job(job, desk.mouth, desk.utter)
+            break
+    return out
+
+
+def _typed_reader(
+    inbox: queue.Queue, quit_ev: threading.Event, on_line=None
+) -> None:
+    while not quit_ev.is_set():
+        try:
+            line = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            inbox.put(("__quit__", None))
+            return
+        if not line:
             continue
-        if not state["down"]:
+        if line.lower() in ("q", "quit", "exit"):
+            inbox.put(("__quit__", None))
+            return
+        inbox.put((line, None))
+        if on_line is not None:
+            on_line()
+
+
+def _ptt_reader(
+    state: dict, inbox: queue.Queue, quit_ev: threading.Event, on_line=None
+) -> None:
+    while not quit_ev.is_set() and not state.get("quit"):
+        if not state.get("down"):
             time.sleep(0.02)
             continue
         hud_state("listening")
         log("[ptt] recording...")
         t0 = time.perf_counter()
-        pcm = record_held(lambda: state["down"])
+        pcm = record_held(lambda: bool(state.get("down")) and not quit_ev.is_set())
         if pcm is None or getattr(pcm, "size", 0) < 1600:
             log("[ptt] too short")
             hud_state("idle")
@@ -1174,11 +1734,68 @@ def run_talk(desk: Desk, stt: str) -> None:
         if not text:
             if "quiet" in note:
                 log("[ears] too quiet — lid closed or wrong mic? USB or phone HUD is better.")
-                desk.mouth.say("I didn't catch that, sir.")
+                inbox.put(("__quiet__", None))
             hud_state("idle")
             continue
-        desk.utter(text, stt_ms=stt_ms)
-        hud_state("idle")
+        inbox.put((text, stt_ms))
+        if on_line is not None:
+            on_line()
+
+
+def _run_talk_loop(desk: Desk, stt: str) -> None:
+    inbox: queue.Queue = queue.Queue()
+    quit_ev = threading.Event()
+    if stt == "none":
+        threading.Thread(
+            target=_typed_reader, args=(inbox, quit_ev, desk.preempt), daemon=True
+        ).start()
+        while not quit_ev.is_set():
+            batch = latest_wins(_take_batch(inbox, 0.2))
+            if not batch:
+                continue
+            if any(t == "__quit__" for t, _ in batch):
+                rest = [(t, s) for t, s in batch if t not in ("__quit__", "__quiet__")]
+                if rest:
+                    desk.handle_batch(rest)
+                break
+            quiet = any(t == "__quiet__" for t, _ in batch)
+            rest = [(t, s) for t, s in batch if t not in ("__quit__", "__quiet__")]
+            if quiet and not rest:
+                desk.mouth.say("I didn't catch that, sir.")
+                hud_state("idle")
+                continue
+            if rest:
+                desk.handle_batch(rest)
+                hud_state("idle")
+        quit_ev.set()
+        return
+    state = {"down": False, "quit": False}
+    start_ptt_listener(state)
+    threading.Thread(
+        target=_ptt_reader, args=(state, inbox, quit_ev, desk.preempt), daemon=True
+    ).start()
+    log("waiting for Home (or iPhone on the PC hotspot)...")
+    while not state["quit"] and not quit_ev.is_set():
+        try:
+            job = incoming_jobs.get_nowait()
+        except queue.Empty:
+            job = None
+        if job:
+            desk.preempt()
+            handle_phone_job(job, desk.mouth, desk.utter)
+            continue
+        batch = latest_wins(_take_batch(inbox, 0.05))
+        if not batch:
+            continue
+        rest = [(t, s) for t, s in batch if t != "__quiet__"]
+        if any(t == "__quiet__" for t, _ in batch) and not rest:
+            desk.mouth.say("I didn't catch that, sir.")
+            hud_state("idle")
+            continue
+        if rest:
+            desk.handle_batch(rest)
+            hud_state("idle")
+    quit_ev.set()
     log("bye")
 
 
@@ -1218,14 +1835,16 @@ def parse_args():
     p.add_argument(
         "--voice",
         default=EDGE_VOICE,
-        help="edge-tts voice id (default en-GB-RyanNeural, a British male)",
+        help="edge-tts voice id (default en-GB-ThomasNeural)",
     )
+    p.add_argument("--rate", default=EDGE_RATE, help="edge-tts rate, e.g. -2%%")
+    p.add_argument("--pitch", default=EDGE_PITCH, help="edge-tts pitch, e.g. +4Hz")
     p.add_argument("--bench", action="store_true", help="time typed hellos, no mic")
     p.add_argument("--no-hud", action="store_true", help="do not open the Iron Man HUD")
     p.add_argument(
         "--no-workshop",
         action="store_true",
-        help="do not spawn the host workshop (desk only)",
+        help="do not spawn host or shell workshops (desk only)",
     )
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument(
@@ -1309,7 +1928,8 @@ def main() -> None:
     session = None
     board = None
     desk = None
-    worker_proc = None
+    workshop_procs: list[subprocess.Popen] = []
+    router = None
     try:
         home, prompt, board, registry = open_memory(args.data_dir)
         warn = home.take_lease(os.getpid())
@@ -1318,24 +1938,36 @@ def main() -> None:
         _setup_ears(home, args)
         if not args.no_workshop and not args.bench:
             try:
-                worker_proc = spawn_host_workshop(
-                    home, grok=GROK, model=args.model, parent_pid=os.getpid()
+                workshop_procs.append(
+                    spawn_host_workshop(
+                        home, grok=GROK, model=args.model, parent_pid=os.getpid()
+                    )
                 )
             except OSError as exc:
                 log(f"[workshop] failed to start: {exc}")
-                worker_proc = None
-            if worker_proc is not None:
-                time.sleep(0.35)
-                if worker_proc.poll() is not None:
-                    log("[workshop] exited immediately — desk only")
-                    worker_proc = None
-                elif _wait_for_worker(registry):
-                    log(f"[workshop] pid={worker_proc.pid} caps={','.join(HOST_CAPS)}")
-                    prompt = build_system_prompt(
-                        load_boot_notes(home), workers=registry.prompt_line()
+            try:
+                workshop_procs.append(
+                    spawn_shell_workshop(
+                        home, grok=GROK, model=args.model, parent_pid=os.getpid()
                     )
-                else:
-                    log("[workshop] no heartbeat yet — jobs will still dispatch")
+                )
+            except OSError as exc:
+                log(f"[workshop] shell failed to start: {exc}")
+            alive = [p for p in workshop_procs if p.poll() is None]
+            dead = len(workshop_procs) - len(alive)
+            workshop_procs = alive
+            if dead:
+                log("[workshop] a worker exited immediately")
+            if workshop_procs:
+                time.sleep(0.35)
+                workshop_procs = [p for p in workshop_procs if p.poll() is None]
+            if workshop_procs and _wait_for_worker(registry):
+                log(f"[workshop] live caps={','.join(registry.caps())}")
+                prompt = build_system_prompt(
+                    load_boot_notes(home), workers=registry.prompt_line()
+                )
+            elif workshop_procs:
+                log("[workshop] no heartbeat yet — jobs will still dispatch")
         if not args.no_hud and not args.bench:
             start_hud(open_browser=True)
             hud_state("idle")
@@ -1344,7 +1976,8 @@ def main() -> None:
             if args.brain == "agent"
             else CliBrain(args.model, system_prompt=prompt)
         )
-        mouth = Mouth(args.tts, voice=args.voice)
+        router = None
+        mouth = Mouth(args.tts, voice=args.voice, rate=args.rate, pitch=args.pitch)
         log(
             f"starting brain={args.brain} model={args.model} stt={args.stt} "
             f"tts={args.tts}"
@@ -1354,8 +1987,29 @@ def main() -> None:
         t0 = time.perf_counter()
         brain.start()
         log(f"[brain] up in {int((time.perf_counter()-t0)*1000)}ms")
+        if args.brain == "agent" and not args.bench:
+            try:
+                t_r = time.perf_counter()
+                router = AgentBrain(
+                    args.model,
+                    system_prompt=ROUTE_SYSTEM,
+                    log_path=HERE / "router.stderr.log",
+                    client="jarvis-router",
+                )
+                router.start()
+                log(f"[route] up in {int((time.perf_counter() - t_r) * 1000)}ms")
+            except Exception as exc:
+                log(f"[route] warm agent failed ({exc}) — cold grok -p")
+                router = None
         ping = threading.Thread(target=brain.warmup, daemon=True)
         ping.start()
+        rping = None
+        if router is not None:
+            rping = threading.Thread(
+                target=lambda: router.warmup("Caps: search, home.\nUtterance: hello"),
+                daemon=True,
+            )
+            rping.start()
         if args.stt != "none":
             warm_stt(args.stt)
         if args.tts != "none":
@@ -1365,11 +2019,15 @@ def main() -> None:
         ping.join(timeout=90)
         if ping.is_alive():
             log("[brain] warmup still running — first hello may be slower")
+        if rping is not None:
+            rping.join(timeout=30)
+            if rping.is_alive():
+                log("[route] warmup still running — first route may be slower")
         if args.bench:
             run_bench(brain, mouth, args.rounds)
         else:
             session = SessionLog.start(home)
-            desk = Desk(brain, mouth, board, registry, session)
+            desk = Desk(brain, mouth, board, registry, session, router=router)
             run_talk(desk, args.stt)
     finally:
         if session is not None and board is not None:
@@ -1377,7 +2035,7 @@ def main() -> None:
             dest = distill_session(session, board=board)
             if dest:
                 log(f"[memory] daily note {dest}")
-            worker_alive = worker_proc is not None and worker_proc.poll() is None
+            worker_alive = any(p.poll() is None for p in workshop_procs)
             if worker_alive and board.active():
                 log("[jobs] waiting on workshop to finish")
                 deadline = time.monotonic() + 45
@@ -1395,11 +2053,20 @@ def main() -> None:
                 for job_id in list(desk.pending):
                     st = board.latest_status(job_id)
                     log(f"[jobs] {job_id} {st}")
-        _stop_worker(worker_proc)
+        for proc in workshop_procs:
+            _stop_worker(proc)
         if home is not None:
             home.drop_lease(os.getpid())
         try:
             brain.close()
+        except NameError:
+            pass
+        try:
+            if router is not None:
+                router.close()
+        except NameError:
+            pass
+        try:
             mouth.close()
         except NameError:
             pass

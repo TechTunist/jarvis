@@ -5,14 +5,18 @@ import json
 import subprocess
 from pathlib import Path
 from shutil import which
+from typing import NamedTuple
 
+NO_MEDIA = "image_gen,image_edit,image_to_video,reference_to_video"
 NO_TOOLS = (
     "Agent,run_terminal_cmd,read_file,search_replace,web_search,web_fetch,"
-    "grep,list_dir,glob"
+    "grep,list_dir,glob," + NO_MEDIA
 )
 # Search keeps web tools; this list is subtracted only when we also pass
 # --disallowed-tools for the rest.
-NO_SHELL = "Agent,run_terminal_cmd,read_file,search_replace,grep,list_dir,glob"
+NO_SHELL = (
+    "Agent,run_terminal_cmd,read_file,search_replace,grep,list_dir,glob," + NO_MEDIA
+)
 
 
 def find_grok() -> Path:
@@ -58,6 +62,30 @@ def text_from_stream(stdout: str) -> str:
     return (stdout or "").strip()
 
 
+def session_id_from_stream(stdout: str) -> str:
+    sid = ""
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "end":
+            sid = str(ev.get("sessionId") or ev.get("session_id") or sid)
+        elif ev.get("sessionId") or ev.get("session_id"):
+            sid = str(ev.get("sessionId") or ev.get("session_id") or sid)
+    return sid
+
+
+class PromptResult(NamedTuple):
+    text: str
+    stdout: str = ""
+    stderr: str = ""
+    session_id: str = ""
+
+
 def extract_json(text: str) -> dict | list | None:
     raw = (text or "").strip()
     if not raw:
@@ -80,7 +108,7 @@ def extract_json(text: str) -> dict | list | None:
     return None
 
 
-def run_prompt(
+def prompt_argv(
     prompt: str,
     *,
     grok: Path,
@@ -88,10 +116,9 @@ def run_prompt(
     system: str,
     web: bool,
     max_turns: int = 6,
-    timeout: float = 90,
-) -> str:
-    if not grok.is_file():
-        raise FileNotFoundError(f"grok CLI missing: {grok}")
+    tools: str | None = None,
+    cwd: Path | str | None = None,
+) -> list[str]:
     cmd = [
         str(grok),
         "-p",
@@ -102,17 +129,50 @@ def run_prompt(
         "low",
         "--always-approve",
         "--no-subagents",
+        "--no-leader",
         "--max-turns",
         str(max_turns),
         "--system-prompt-override",
         system,
         "--output-format",
         "streaming-json",
-        "--disallowed-tools",
-        NO_SHELL if web else NO_TOOLS,
     ]
-    if not web:
+    if cwd is not None:
+        cmd.extend(["--cwd", str(cwd)])
+    if tools:
+        cmd.extend(["--tools", tools])
         cmd.append("--disable-web-search")
+    else:
+        cmd.extend(["--disallowed-tools", NO_SHELL if web else NO_TOOLS])
+        if not web:
+            cmd.append("--disable-web-search")
+    return cmd
+
+
+def run_prompt_result(
+    prompt: str,
+    *,
+    grok: Path,
+    model: str,
+    system: str,
+    web: bool,
+    max_turns: int = 6,
+    timeout: float = 90,
+    tools: str | None = None,
+    cwd: Path | str | None = None,
+) -> PromptResult:
+    if not grok.is_file():
+        raise FileNotFoundError(f"grok CLI missing: {grok}")
+    cmd = prompt_argv(
+        prompt,
+        grok=grok,
+        model=model,
+        system=system,
+        web=web,
+        max_turns=max_turns,
+        tools=tools,
+        cwd=cwd,
+    )
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -120,6 +180,7 @@ def run_prompt(
         text=True,
         encoding="utf-8",
         errors="replace",
+        cwd=str(cwd) if cwd is not None else None,
     )
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
@@ -131,6 +192,37 @@ def run_prompt(
         err = (stderr or "").strip()[:400]
         raise RuntimeError(err or f"grok exited {proc.returncode}")
     text = text_from_stream(stdout)
-    if not text:
-        raise RuntimeError((stderr or "grok produced no text").strip()[:400])
-    return text
+    return PromptResult(
+        text=text,
+        stdout=stdout or "",
+        stderr=stderr or "",
+        session_id=session_id_from_stream(stdout),
+    )
+
+
+def run_prompt(
+    prompt: str,
+    *,
+    grok: Path,
+    model: str,
+    system: str,
+    web: bool,
+    max_turns: int = 6,
+    timeout: float = 90,
+    tools: str | None = None,
+    cwd: Path | str | None = None,
+) -> str:
+    got = run_prompt_result(
+        prompt,
+        grok=grok,
+        model=model,
+        system=system,
+        web=web,
+        max_turns=max_turns,
+        timeout=timeout,
+        tools=tools,
+        cwd=cwd,
+    )
+    if not got.text:
+        raise RuntimeError((got.stderr or "grok produced no text").strip()[:400])
+    return got.text

@@ -3,185 +3,67 @@
 <head>
   <meta charset="utf-8" />
   <title>J.A.R.V.I.S.</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    html, body { margin: 0; height: 100%; background: #02060c; overflow: hidden; cursor: none; }
-    canvas { display: block; width: 100%; height: 100%; }
+    html, body { margin: 0; height: 100%; background: #01040a; overflow: hidden; cursor: none; }
+    #c { display: block; width: 100%; height: 100%; }
+    #ui {
+      position: fixed; inset: 0; pointer-events: none;
+      font-family: "Eurostile", "Orbitron", "Segoe UI", system-ui, sans-serif;
+      color: #7eeeff; text-shadow: 0 0 18px rgba(0, 220, 255, 0.45);
+    }
+    #name {
+      position: absolute; top: 7vh; left: 0; right: 0; text-align: center;
+      font-size: clamp(22px, 3.2vw, 42px); letter-spacing: 0.55em; font-weight: 600;
+    }
+    #state {
+      position: absolute; bottom: 11vh; left: 0; right: 0; text-align: center;
+      font-size: clamp(13px, 1.6vw, 20px); letter-spacing: 0.42em;
+    }
+    #line {
+      position: absolute; bottom: 6.5vh; left: 8vw; right: 8vw; text-align: center;
+      font-size: clamp(12px, 1.4vw, 16px); letter-spacing: 0.12em;
+      opacity: 0.75; min-height: 1.4em;
+    }
+    #hint {
+      position: absolute; bottom: 2.8vh; left: 0; right: 0; text-align: center;
+      font-size: 11px; letter-spacing: 0.35em; opacity: 0.4;
+    }
+    .corner {
+      position: absolute; width: 54px; height: 54px; border: 1.5px solid rgba(0, 220, 255, 0.35);
+    }
+    .tl { top: 22px; left: 22px; border-right: 0; border-bottom: 0; }
+    .tr { top: 22px; right: 22px; border-left: 0; border-bottom: 0; }
+    .bl { bottom: 22px; left: 22px; border-right: 0; border-top: 0; }
+    .br { bottom: 22px; right: 22px; border-left: 0; border-top: 0; }
+    #scan {
+      position: absolute; inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0, transparent 2px,
+        rgba(0, 10, 20, 0.12) 3px
+      );
+      mix-blend-mode: overlay; opacity: 0.35;
+    }
+    body.listening #ui { color: #ffb020; text-shadow: 0 0 18px rgba(255, 176, 32, 0.5); }
+    body.listening .corner { border-color: rgba(255, 176, 32, 0.45); }
+    body.thinking #ui { color: #50dcff; }
+    body.speaking #ui { color: #00f3ff; text-shadow: 0 0 22px rgba(0, 243, 255, 0.65); }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<script>
-const C = document.getElementById("c");
-const X = C.getContext("2d");
-let W = 0, H = 0, t0 = performance.now();
-const hud = { state: "idle", level: 0, line: "", name: "J.A.R.V.I.S." };
-
-function resize() {
-  W = C.width = innerWidth;
-  H = C.height = innerHeight;
-}
-addEventListener("resize", resize);
-resize();
-addEventListener("keydown", (e) => {
-  if (e.key === "f" || e.key === "F") {
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-    else document.exitFullscreen();
-  }
-});
-
-async function poll() {
-  try {
-    const r = await fetch("/state", { cache: "no-store" });
-    Object.assign(hud, await r.json());
-  } catch (_) {}
-}
-setInterval(poll, 80);
-poll();
-
-function col(state) {
-  if (state === "listening") return [255, 176, 32];
-  if (state === "thinking") return [80, 220, 255];
-  if (state === "speaking") return [0, 229, 255];
-  return [0, 160, 200];
-}
-
-function ring(cx, cy, r, a, w, rgb, spin) {
-  X.save();
-  X.translate(cx, cy);
-  X.rotate(spin);
-  X.beginPath();
-  X.arc(0, 0, r, a, a + Math.PI * 1.4);
-  X.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.85)`;
-  X.lineWidth = w;
-  X.stroke();
-  X.beginPath();
-  X.arc(0, 0, r, a + Math.PI * 1.55, a + Math.PI * 1.95);
-  X.stroke();
-  X.restore();
-}
-
-function hex(cx, cy, r, rgb, a) {
-  X.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const ang = Math.PI / 6 + i * Math.PI / 3;
-    const x = cx + Math.cos(ang) * r, y = cy + Math.sin(ang) * r;
-    i ? X.lineTo(x, y) : X.moveTo(x, y);
-  }
-  X.closePath();
-  X.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
-  X.lineWidth = 1.5;
-  X.stroke();
-}
-
-function brackets(rgb) {
-  const m = 28, s = 46;
-  X.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.55)`;
-  X.lineWidth = 2;
-  [[m, m, 1, 1], [W - m, m, -1, 1], [m, H - m, 1, -1], [W - m, H - m, -1, -1]].forEach(([x, y, dx, dy]) => {
-    X.beginPath();
-    X.moveTo(x + dx * s, y);
-    X.lineTo(x, y);
-    X.lineTo(x, y + dy * s);
-    X.stroke();
-  });
-}
-
-function label(text, x, y, size, rgb, a = 0.9) {
-  X.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
-  X.font = `${size}px Consolas, "Courier New", monospace`;
-  X.textAlign = "center";
-  X.textBaseline = "middle";
-  X.fillText(text, x, y);
-}
-
-function draw(now) {
-  const t = (now - t0) / 1000;
-  const rgb = col(hud.state);
-  X.fillStyle = "#02060c";
-  X.fillRect(0, 0, W, H);
-  const g = X.createRadialGradient(W / 2, H / 2, 40, W / 2, H / 2, Math.max(W, H) * 0.55);
-  g.addColorStop(0, "rgba(0,40,60,0.35)");
-  g.addColorStop(1, "rgba(0,0,0,0)");
-  X.fillStyle = g;
-  X.fillRect(0, 0, W, H);
-
-  X.strokeStyle = "rgba(0,80,110,0.12)";
-  X.lineWidth = 1;
-  const step = 48;
-  for (let x = (t * 12) % step; x < W; x += step) {
-    X.beginPath(); X.moveTo(x, 0); X.lineTo(x, H); X.stroke();
-  }
-  for (let y = 0; y < H; y += step) {
-    X.beginPath(); X.moveTo(0, y); X.lineTo(W, y); X.stroke();
-  }
-
-  const cx = W / 2, cy = H / 2 + 10;
-  const pulse = hud.state === "idle" ? 0.5 + 0.5 * Math.sin(t * 1.6)
-    : hud.state === "listening" ? 0.7 + 0.3 * Math.sin(t * 8)
-    : hud.state === "thinking" ? 0.6 + 0.4 * Math.sin(t * 12)
-    : 0.75 + 0.25 * Math.sin(t * 20);
-  const spin = hud.state === "thinking" ? t * 2.2
-    : hud.state === "listening" ? -t * 1.4
-    : t * 0.35;
-
-  for (let i = 0; i < 5; i++) {
-    ring(cx, cy, 78 + i * 38 + pulse * 6, spin + i * 0.5, 1.2 + (i === 0 ? 1 : 0), rgb, spin * (i % 2 ? -1 : 1) * 0.15);
-  }
-  hex(cx, cy, 52 + pulse * 8, rgb, 0.9);
-  hex(cx, cy, 64 + pulse * 10, rgb, 0.35);
-
-  X.beginPath();
-  X.arc(cx, cy, 22 + pulse * 10, 0, Math.PI * 2);
-  X.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${0.12 + pulse * 0.18})`;
-  X.fill();
-  X.beginPath();
-  X.arc(cx, cy, 8 + pulse * 4, 0, Math.PI * 2);
-  X.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${0.55 + pulse * 0.4})`;
-  X.fill();
-
-  if (hud.state === "speaking") {
-    X.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.55)`;
-    X.lineWidth = 2;
-    X.beginPath();
-    const n = 64;
-    for (let i = 0; i < n; i++) {
-      const ang = (i / n) * Math.PI * 2 + t;
-      const mag = 90 + Math.sin(t * 18 + i * 0.4) * 28 * pulse;
-      const x = cx + Math.cos(ang) * mag, y = cy + Math.sin(ang) * mag;
-      i ? X.lineTo(x, y) : X.moveTo(x, y);
-    }
-    X.closePath();
-    X.stroke();
-  }
-
-  if (hud.state === "listening") {
-    for (let i = 0; i < 3; i++) {
-      const rr = 120 + ((t * 90 + i * 40) % 140);
-      X.beginPath();
-      X.arc(cx, cy, rr, 0, Math.PI * 2);
-      X.strokeStyle = `rgba(255,176,32,${1 - (rr - 120) / 140})`;
-      X.lineWidth = 1;
-      X.stroke();
-    }
-  }
-
-  brackets(rgb);
-  label(hud.name, cx, 52, 28, rgb);
-  const st = (hud.state || "idle").toUpperCase();
-  label(st, cx, H - 64, 18, rgb, 0.95);
-  const hint = hud.state === "idle" ? "HOLD  HOME  TO  SPEAK     F  FULLSCREEN"
-    : hud.state === "listening" ? "LISTENING"
-    : hud.state === "thinking" ? "PROCESSING"
-    : (hud.line || "SPEAKING");
-  label(hint, cx, H - 36, 13, rgb, 0.55);
-
-  X.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.08)`;
-  const scan = (t * 90) % H;
-  X.fillRect(0, scan, W, 18);
-
-  requestAnimationFrame(draw);
-}
-requestAnimationFrame(draw);
-</script>
+<div id="ui">
+  <div id="scan"></div>
+  <div class="corner tl"></div>
+  <div class="corner tr"></div>
+  <div class="corner bl"></div>
+  <div class="corner br"></div>
+  <div id="name">J.A.R.V.I.S.</div>
+  <div id="state">IDLE</div>
+  <div id="line"></div>
+  <div id="hint">HOLD HOME TO SPEAK&nbsp;&nbsp;·&nbsp;&nbsp;F FULLSCREEN</div>
+</div>
+<script type="module" src="./hud.js"></script>
 </body>
 </html>

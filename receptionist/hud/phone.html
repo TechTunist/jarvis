@@ -14,6 +14,9 @@
       height: 88px;
       z-index: 2147483647;
       -webkit-appearance: none; appearance: none;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
       border: 3px solid #ffcc33;
       background: #c47a00;
       color: #1a1000;
@@ -36,7 +39,7 @@
 <canvas id="c"></canvas>
 <div id="msg">Join the PC hotspot. Hold the button. Allow mic.</div>
 <button id="ptt" type="button">HOLD TO TALK</button>
-<audio id="out" playsinline></audio>
+<audio id="out" playsinline webkit-playsinline></audio>
 <script>
 const C = document.getElementById("c");
 const X = C.getContext("2d");
@@ -46,15 +49,6 @@ const out = document.getElementById("out");
 let W = 0, H = 0, t0 = performance.now();
 const hud = { state: "idle", level: 0, line: "", name: "J.A.R.V.I.S." };
 let rec = null, chunks = [], holding = false, actx = null;
-
-async function unlockAudio() {
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return;
-  if (!actx) actx = new AC();
-  if (actx.state === "suspended") await actx.resume();
-  out.muted = false;
-  out.play().catch(() => {});
-}
 
 function resize() { W = C.width = innerWidth; H = C.height = innerHeight; }
 addEventListener("resize", resize); resize();
@@ -112,68 +106,198 @@ function draw(now) {
 requestAnimationFrame(draw);
 
 function mime() {
+  if (!window.MediaRecorder) return "";
   const opts = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/aac"];
-  return opts.find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+  return opts.find((t) => MediaRecorder.isTypeSupported(t)) || "";
 }
 
-async function startHold(e) {
-  e.preventDefault();
-  if (holding) return;
-  holding = true; ptt.classList.add("hot"); ptt.textContent = "LISTENING…";
+// Short silent WAV. Keep it looping from the finger-down so Safari still
+// allows play() after the slow round-trip to Talk.
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAABErAAABAAgAZGF0YQAAAAA=";
+
+function unlockAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (AC) {
+    if (!actx) actx = new AC();
+    actx.resume().catch(() => {});
+    try {
+      const silent = actx.createBuffer(1, 1, 22050);
+      const src = actx.createBufferSource();
+      src.buffer = silent;
+      src.connect(actx.destination);
+      src.start(0);
+    } catch (_) {}
+  }
+  out.muted = false;
+  out.loop = true;
   try {
-    await unlockAudio();
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const t = mime();
-    chunks = [];
-    rec = t ? new MediaRecorder(stream, { mimeType: t }) : new MediaRecorder(stream);
-    rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-    rec.start(200);
-    msg.textContent = "Release to send";
+    if (!out.src || out.src.indexOf("blob:") !== 0) out.src = SILENT_WAV;
+    const p = out.play();
+    if (p && p.catch) p.catch(() => {});
+  } catch (_) {}
+}
+
+let cancelHold = false;
+let ending = false;
+let activePtr = null;
+
+function armRecorder(stream) {
+  const t = mime();
+  chunks = [];
+  rec = t ? new MediaRecorder(stream, { mimeType: t }) : new MediaRecorder(stream);
+  rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+  try { rec.start(200); } catch (_) { rec.start(); }
+  msg.textContent = "Release to send";
+}
+
+function startHold(e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  if (holding || ending) return;
+  if (!window.MediaRecorder) {
+    msg.textContent = "This browser cannot record. iOS 14.3+ Safari, use https.";
+    return;
+  }
+  if (!window.isSecureContext) {
+    msg.textContent = "Need https (Safari blocks the mic on http).";
+    return;
+  }
+  holding = true;
+  cancelHold = false;
+  rec = null;
+  if (e && e.pointerId != null) {
+    activePtr = e.pointerId;
+    try { ptt.setPointerCapture(e.pointerId); } catch (_) {}
+  }
+  ptt.classList.add("hot");
+  ptt.textContent = "LISTENING…";
+  msg.textContent = "Listening…";
+  unlockAudio();
+  // Must start in this gesture tick — do not await first.
+  navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+    if (cancelHold || !holding) {
+      stream.getTracks().forEach((tr) => tr.stop());
+      return;
+    }
+    try {
+      armRecorder(stream);
+    } catch (err) {
+      stream.getTracks().forEach((tr) => tr.stop());
+      holding = false;
+      rec = null;
+      ptt.classList.remove("hot");
+      ptt.textContent = "HOLD TO TALK";
+      msg.textContent = "Recorder failed: " + err;
+    }
+  }).catch((err) => {
+    holding = false;
+    rec = null;
+    ptt.classList.remove("hot");
+    ptt.textContent = "HOLD TO TALK";
+    msg.textContent = "Mic blocked. Allow microphone in Safari. " + err;
+  });
+}
+
+async function playReply(buf) {
+  const url = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
+  out.loop = false;
+  out.muted = false;
+  out.src = url;
+  out.load();
+  try {
+    await out.play();
+    msg.textContent = "Speaking on this phone";
   } catch (err) {
-    holding = false; ptt.classList.remove("hot"); ptt.textContent = "HOLD TO TALK";
-    msg.textContent = "Mic blocked. Use https, allow microphone. " + err;
+    msg.textContent = "Safari blocked playback. Keep the page open and try again. " + err;
   }
 }
 
+function waitMs(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
 async function endHold(e) {
-  e.preventDefault();
-  if (!holding || !rec) return;
-  holding = false; ptt.classList.remove("hot"); ptt.textContent = "THINKING…";
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (activePtr != null && e.pointerId != null && e.pointerId !== activePtr) return;
+  }
+  if (!holding || ending) return;
+  ending = true;
+  unlockAudio();
+  ptt.classList.remove("hot");
+  ptt.textContent = "THINKING…";
+  msg.textContent = "Sending…";
+  const t0 = Date.now();
+  while (!rec && holding && Date.now() - t0 < 4000) {
+    await waitMs(40);
+  }
+  holding = false;
+  activePtr = null;
+  if (!rec) {
+    cancelHold = true;
+    ending = false;
+    ptt.textContent = "HOLD TO TALK";
+    msg.textContent = "Mic did not start. Tap Allow, then hold again.";
+    return;
+  }
   const recNow = rec;
   rec = null;
-  await new Promise((res) => { recNow.onstop = res; recNow.stop(); recNow.stream.getTracks().forEach((tr) => tr.stop()); });
-  const blob = new Blob(chunks, { type: recNow.mimeType || "audio/mp4" });
-  if (blob.size < 800) { msg.textContent = "Too short"; ptt.textContent = "HOLD TO TALK"; return; }
-  msg.textContent = "Sending…";
+  const blob = await new Promise((res) => {
+    const finish = () => {
+      try { recNow.stream.getTracks().forEach((tr) => tr.stop()); } catch (_) {}
+      res(new Blob(chunks, { type: recNow.mimeType || "audio/mp4" }));
+    };
+    recNow.onstop = finish;
+    try { recNow.requestData && recNow.requestData(); } catch (_) {}
+    try { recNow.stop(); } catch (_) { finish(); }
+  });
+  if (blob.size < 800) {
+    ending = false;
+    msg.textContent = "Too short — keep holding while you speak.";
+    ptt.textContent = "HOLD TO TALK";
+    return;
+  }
   try {
-    const r = await fetch("/utterance", { method: "POST", body: blob, headers: { "Content-Type": blob.type || "audio/mp4" } });
-    if (!r.ok) { msg.textContent = "Desk error " + r.status; ptt.textContent = "HOLD TO TALK"; return; }
-    const buf = await r.arrayBuffer();
-    if (!buf.byteLength) { msg.textContent = "No audio came back. You should still hear the PC."; ptt.textContent = "HOLD TO TALK"; return; }
-    await unlockAudio();
-    if (actx) {
-      const decoded = await actx.decodeAudioData(buf.slice(0));
-      const src = actx.createBufferSource();
-      src.buffer = decoded;
-      src.connect(actx.destination);
-      src.start();
-    } else {
-      const url = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
-      out.src = url;
-      await out.play();
+    const r = await fetch("/utterance", {
+      method: "POST",
+      body: blob,
+      headers: { "Content-Type": blob.type || "audio/mp4" },
+    });
+    const ctype = (r.headers.get("Content-Type") || "").toLowerCase();
+    if (!r.ok) {
+      let detail = "Desk error " + r.status;
+      if (ctype.includes("json")) {
+        try { detail = (await r.json()).error || detail; } catch (_) {}
+      }
+      msg.textContent = detail;
+      ptt.textContent = "HOLD TO TALK";
+      ending = false;
+      return;
     }
-    msg.textContent = "Speaking on this phone";
+    const buf = await r.arrayBuffer();
+    if (!buf.byteLength) {
+      msg.textContent = "No audio came back. You should still hear the PC.";
+      ptt.textContent = "HOLD TO TALK";
+      ending = false;
+      return;
+    }
+    await playReply(buf);
   } catch (err) {
     msg.textContent = "Send failed: " + err;
   }
   ptt.textContent = "HOLD TO TALK";
+  ending = false;
 }
 
-ptt.addEventListener("touchstart", startHold, { passive: false });
-ptt.addEventListener("touchend", endHold, { passive: false });
-ptt.addEventListener("touchcancel", endHold, { passive: false });
-ptt.addEventListener("mousedown", startHold);
-addEventListener("mouseup", (e) => { if (holding) endHold(e); });
+ptt.addEventListener("pointerdown", startHold);
+ptt.addEventListener("pointerup", endHold);
+ptt.addEventListener("pointercancel", (e) => {
+  // iOS often fires cancel while the finger is still down. Ignore it.
+  if (e) e.preventDefault();
+});
 
 out.addEventListener("play", () => { msg.textContent = "Speaking"; });
 </script>

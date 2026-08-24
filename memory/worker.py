@@ -1,7 +1,7 @@
-"""Host workshop: heartbeat + pull jobs. Search, vault-write, distill.
+"""Host workshop: heartbeat + pull jobs.
 
 Talk stays tool-free. This process is the hands: grok -p with web search for
-lookup, Python-only writes into allowed vault files.
+lookup, Grok Imagine for stills, Python-only writes into allowed vault files.
 """
 from __future__ import annotations
 
@@ -17,22 +17,51 @@ from collections.abc import Callable
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from memory.grokrun import extract_json, find_grok, run_prompt
+from memory.grokrun import extract_json, find_grok, run_prompt, run_prompt_result
 from memory.home import JarvisHome
 from memory.intent import file_line, remember_dest
 from memory.jobs import JobBoard
+from memory.shell import SHELL_CAPS, repo_root
 from memory.workshops import WorkshopRegistry
 
-HOST_CAPS = ("search", "vault-write", "distill", "home")
+HOST_CAPS = (
+    "search",
+    "vault-write",
+    "distill",
+    "home",
+    "imagine",
+    "docs",
+    "forge",
+)
+FORGE_SYSTEM = (
+    "You have Matt's training log. Answer what he asked in one or two short "
+    "spoken sentences. No markdown, no lists, no preamble, no medical advice. "
+    "If the log is empty or missing, say so. Do not invent lifts."
+)
 SEARCH_SYSTEM = (
     "You are Jarvis's workshop, not the front desk. Search the web if needed. "
-    "Reply with at most two short spoken sentences for Matt. British butler. "
-    "First sentence at most six words. No markdown, no lists, no URLs unless "
-    "essential. No preamble."
+    "The desk already said it would look. Do not say you will check, look, or "
+    "get back — answer now. At most two short spoken sentences. "
+    "No announcing yourself. No markdown, no lists, no URLs unless "
+    "essential. No preamble. If a default weather location is given and Matt "
+    "does not name a city, use that location. Do not ask which city."
 )
 REMEMBER_SYSTEM = (
-    'Return JSON only: {"bullet": "one short durable fact"}. '
-    "No markdown, no leading dash, no 'remember'."
+    'Return JSON only: {"bullet": "one short durable fact", '
+    '"action": "file"|"forget"|"place"}. '
+    "place = weather location as 'City, Region, Country'. "
+    "forget = the thing to drop. file = a lasting household fact. "
+    "No markdown, no leading dash."
+)
+DOCS_SYSTEM = (
+    "You write a markdown document Jarvis will save as a guide and a PDF. "
+    "Return markdown only — title, frozen parts list with quantities, "
+    "wiring/power, firmware flash, assembly steps, test. "
+    "No spoken butler voice, no JSON, no preamble. "
+    "You have NO files and NO workspace. All context is in the user message. "
+    "Never say you are searching, never ask for details already in the brief, "
+    "never write a one-line stall. Freeze one repeatable recipe from what "
+    "Matt already chose. British English, room-by-room cloneable."
 )
 DISTILL_SYSTEM = (
     "Extract durable household facts from this transcript. "
@@ -43,6 +72,41 @@ DISTILL_SYSTEM = (
     "daily = only if it matters today and not later. "
     'reminders = timed items as "HH:MM daily - fact" or "YYYY-MM-DD HH:MM - fact". '
     'If nothing durable, {"facts": []}.'
+)
+IMAGINE_SYSTEM = (
+    "You are Jarvis's workshop, not the front desk. "
+    "Call the image_gen tool once with a strong visual prompt for the picture "
+    "Matt asked for. Do not call image_edit, image_to_video, or any other tool. "
+    "Do not write code or touch the git checkout. After the image is saved, "
+    "reply with JSON only: "
+    '{"path": "<absolute path of the saved file>", "title": "<two or three words>"}. '
+    "No markdown, no preamble."
+)
+IMAGINE_VIDEO_SYSTEM = (
+    "You are Jarvis's workshop, not the front desk. "
+    "Matt asked for a rotating or animated clip. Call image_gen once for a "
+    "clean hero still, then image_to_video once to animate a slow rotation "
+    "or orbit (about 6 seconds). Do not write code. If video generation is "
+    "blocked, keep the still and return that path. Reply with JSON only: "
+    '{"path": "<absolute path>", "title": "<two or three words>", '
+    '"kind": "video"|"still"}. No markdown, no preamble.'
+)
+IMAGINE_ASSEMBLY_SYSTEM = (
+    "You are Jarvis's workshop, not the front desk. "
+    "Matt wants an assembly animation of a real kit, not a finished mystery gadget. "
+    "Read the brief. Name the actual parts in the image_gen prompt "
+    "(board, microphone capsule, cells, BMS with USB-C, switch, LED, enclosure). "
+    "First still: those parts laid out on a workbench, labelled enough to tell apart, "
+    "technical product viz. Then image_to_video: those SAME parts fitting together "
+    "into the enclosure — exploded-to-assembled, not an orbit of a sealed unit. "
+    "Do not invent a different product. Do not write code. If video is blocked, "
+    "keep the exploded still. JSON only: "
+    '{"path": "<absolute path>", "title": "<two or three words>", '
+    '"kind": "video"|"still"}. No markdown, no preamble.'
+)
+IMAGINE_USER = (
+    "{brief}\n"
+    "Return the JSON after the file is saved."
 )
 
 CompleteFn = Callable[..., str]
@@ -84,6 +148,42 @@ def append_bullet(path: Path, bullet: str) -> bool:
     else:
         path.write_text(line, encoding="utf-8")
     return True
+
+
+def remove_matching_lines(path: Path, pattern: re.Pattern[str]) -> int:
+    if not path.is_file():
+        return 0
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    keep: list[str] = []
+    n = 0
+    for line in lines:
+        if line.lstrip().startswith("-") and pattern.search(line):
+            n += 1
+            continue
+        keep.append(line)
+    if n:
+        path.write_text("".join(keep), encoding="utf-8")
+    return n
+
+
+def extract_place(text: str) -> str:
+    raw = " ".join((text or "").split())
+    hit = re.search(
+        r"(?:live in|i'?m in|i am in|not in \w+,\s*i am in|to|use)\s+"
+        r"([A-Za-z][A-Za-z]+(?:[\s,][A-Za-z]+){0,4})",
+        raw,
+        re.I,
+    )
+    if not hit:
+        return ""
+    place = hit.group(1)
+    place = re.sub(
+        r"\b(?:weather|location|please|instead|of|from|the)\b",
+        "",
+        place,
+        flags=re.I,
+    )
+    return " ".join(place.split()).strip(" ,.")
 
 
 def _session_turns(path: Path, limit: int = 40) -> str:
@@ -135,27 +235,35 @@ class HostWorker:
         parent_pid: int = 0,
         heartbeat_s: float = 10.0,
         caps: tuple[str, ...] = HOST_CAPS,
+        repo: Path | str | None = None,
     ):
         self.home = home
         self.grok = grok or find_grok()
         self.model = model
-        self.worker_id = worker_id or f"host-{socket.gethostname()}"
+        if worker_id:
+            self.worker_id = worker_id
+        elif "shell" in caps and "search" not in caps:
+            self.worker_id = f"shell-{socket.gethostname()}"
+        else:
+            self.worker_id = f"host-{socket.gethostname()}"
         self.complete = complete
         self.parent_pid = parent_pid
         self.heartbeat_s = heartbeat_s
         self.caps = caps
+        self.repo = Path(repo).resolve() if repo else None
         self.board = JobBoard(home)
         self.registry = WorkshopRegistry(home)
         self._last_beat = 0.0
 
     def advertise(self) -> None:
-        self.registry.advertise(
-            self.worker_id,
-            list(self.caps),
-            host=socket.gethostname(),
-            pid=os.getpid(),
-            model=self.model,
-        )
+        extra: dict = {
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+            "model": self.model,
+        }
+        if self.repo:
+            extra["roots"] = [str(self.repo)]
+        self.registry.advertise(self.worker_id, list(self.caps), **extra)
         self._last_beat = time.monotonic()
 
     def beat(self) -> None:
@@ -170,10 +278,17 @@ class HostWorker:
         web: bool,
         max_turns: int = 6,
         timeout: float = 90,
+        tools: str | None = None,
+        cwd: Path | str | None = None,
     ) -> str:
         if self.complete is not None:
             return self.complete(
-                prompt, system=system, web=web, max_turns=max_turns
+                prompt,
+                system=system,
+                web=web,
+                max_turns=max_turns,
+                tools=tools,
+                cwd=cwd,
             )
         return run_prompt(
             prompt,
@@ -183,6 +298,8 @@ class HostWorker:
             web=web,
             max_turns=max_turns,
             timeout=timeout,
+            tools=tools,
+            cwd=cwd,
         )
 
     def handle(self, snap: dict) -> tuple[str, str]:
@@ -195,16 +312,264 @@ class HostWorker:
             return self._distill(snap)
         if cap == "home":
             return self._home(snap)
+        if cap == "imagine":
+            return self._imagine(snap)
+        if cap == "docs":
+            return self._docs(snap)
+        if cap == "shell":
+            return self._shell(snap)
+        if cap == "forge":
+            return self._forge(snap)
         raise RuntimeError(f"unsupported cap {cap!r}")
 
-    def _home(self, snap: dict) -> tuple[str, str]:
-        from memory.ha import run_home
+    def _forge(self, snap: dict) -> tuple[str, str]:
+        from memory.forge import fetch_brief, load_secrets
 
-        return run_home(self.home, snap)
+        prompt = str(snap.get("prompt") or "").strip()
+        secrets = load_secrets(self.home)
+        if not secrets.get("url"):
+            return "Forge is not configured, sir.", "no secrets"
+        try:
+            brief = fetch_brief(self.home)
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "not on file" in msg:
+                return "Forge login is not on file, sir.", "no login"
+            raise
+        asked = (
+            "Training log:\n"
+            + brief
+            + "\n\nMatt asked: "
+            + prompt
+            + "\nAnswer from the log only."
+        )
+        speak = self._ask(
+            asked,
+            system=FORGE_SYSTEM,
+            web=False,
+            max_turns=1,
+            timeout=40,
+        )
+        speak = " ".join((speak or "").split())
+        return speak, brief[:200]
+
+    def _shell(self, snap: dict) -> tuple[str, str]:
+        from memory.shell import (
+            SHELL_SYSTEM,
+            SHELL_TOOLS,
+            looks_like_tests,
+            refuse_reason,
+            run_unittests,
+            shell_brief,
+            speak_from_grok,
+        )
+
+        prompt = str(snap.get("prompt") or "").strip()
+        root = Path(str(snap.get("root") or self.repo or repo_root()))
+        reason = refuse_reason(prompt)
+        if reason:
+            return reason, "refused"
+        if looks_like_tests(prompt):
+            return run_unittests(root)
+        asked = shell_brief(self.home, prompt)
+        raw = self._ask(
+            asked,
+            system=SHELL_SYSTEM,
+            web=False,
+            max_turns=12,
+            timeout=180,
+            tools=SHELL_TOOLS,
+            cwd=root,
+        )
+        return speak_from_grok(raw)
+
+    def _docs(self, snap: dict) -> tuple[str, str]:
+        from memory.docs import looks_like_guide, save_guide, slug_title, speak_ready
+        from memory.working import workshop_brief
+
+        prompt = str(snap.get("prompt") or "").strip()
+        brief = workshop_brief(self.home, prompt)
+        asked = "Write the markdown guide for this request.\n\n" + brief
+        markdown = self._ask(
+            asked,
+            system=DOCS_SYSTEM,
+            web=False,
+            max_turns=2,
+            timeout=90,
+        )
+        body = (markdown or "").strip()
+        if not looks_like_guide(body):
+            markdown = self._ask(
+                asked
+                + "\n\nYour last reply was not a guide. Output the full markdown "
+                "spec now: title, parts with quantities, power/BMS, assembly, flash, test.",
+                system=DOCS_SYSTEM,
+                web=False,
+                max_turns=2,
+                timeout=90,
+            )
+            body = (markdown or "").strip()
+        if not looks_like_guide(body):
+            raise RuntimeError(
+                "docs workshop did not write a real guide (refused or too thin)"
+            )
+        slug = slug_title(prompt)
+        if slug.startswith("so-can-you") or slug.startswith("can-you"):
+            slug = "build-guide"
+        _md, pdf = save_guide(body, slug=slug)
+        return speak_ready(pdf), str(pdf)
+
+    def _home(self, snap: dict) -> tuple[str, str]:
+        from memory.ha import grok_map_command, run_home
+
+        def mapper(prompt: str, roster: list[dict]):
+            return grok_map_command(
+                prompt, roster, grok=self.grok, model=self.model
+            )
+
+        return run_home(self.home, snap, mapper=mapper)
+
+    def _imagine(self, snap: dict) -> tuple[str, str]:
+        from memory.grokrun import session_id_from_stream
+        from memory.imagine import (
+            album_dir,
+            append_index,
+            collect_new_images,
+            files_from_stream,
+            grok_session_folder,
+            library_label,
+            library_root,
+            parse_imagine_request,
+            pick_candidate,
+            resolve_image_path,
+            settle_image,
+            slug_title,
+            speak_ready,
+            wants_animation,
+            wants_assembly,
+        )
+        from memory.working import workshop_brief
+
+        prompt = str(snap.get("prompt") or "").strip()
+        brief = workshop_brief(self.home, prompt)
+        kind = str(snap.get("media") or "")
+        assembly = wants_assembly(prompt) or wants_assembly(brief)
+        if assembly:
+            kind = "video"
+        elif kind not in ("video", "still"):
+            kind = "video" if wants_animation(prompt) else "still"
+        subject, album = parse_imagine_request(prompt)
+        root = library_root(kind)
+        dest_dir = album_dir(root, album)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        slug = slug_title(subject)
+        if assembly and (slug.startswith("so-can-you") or "animation" in slug):
+            slug = "kit-assembly"
+        started = time.time()
+        user = IMAGINE_USER.replace("{brief}", brief)
+        tools = "image_gen,image_to_video" if kind == "video" else "image_gen"
+        if assembly:
+            system = IMAGINE_ASSEMBLY_SYSTEM
+            tools = "image_gen,image_to_video"
+            kind = "video"
+        elif kind == "video":
+            system = IMAGINE_VIDEO_SYSTEM
+        else:
+            system = IMAGINE_SYSTEM
+        timeout = 180 if kind == "video" else 120
+        max_turns = 6 if kind == "video" else 3
+        stdout = ""
+        session_id = ""
+        if self.complete is not None:
+            raw = self._ask(
+                user,
+                system=system,
+                web=False,
+                max_turns=max_turns,
+                timeout=timeout,
+                tools=tools,
+                cwd=dest_dir,
+            )
+        else:
+            got = run_prompt_result(
+                user,
+                grok=self.grok,
+                model=self.model,
+                system=system,
+                web=False,
+                max_turns=max_turns,
+                timeout=timeout,
+                tools=tools,
+                cwd=dest_dir,
+            )
+            raw = got.text
+            stdout = got.stdout
+            session_id = got.session_id
+
+        candidates: list[Path] = []
+        seen: set[Path] = set()
+
+        def add(path: Path | None) -> None:
+            if path is None or not path.is_file():
+                return
+            key = path.resolve()
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(path)
+
+        parsed = extract_json(raw)
+        title = ""
+        if isinstance(parsed, dict):
+            title = str(parsed.get("title") or "").strip()
+            add(resolve_image_path(str(parsed.get("path") or ""), dest_dir))
+            if str(parsed.get("kind") or "") == "still":
+                kind = "still"
+        for blob in (stdout, raw):
+            for hit in files_from_stream(blob):
+                add(resolve_image_path(hit, dest_dir))
+        folders = [dest_dir, dest_dir / "images", dest_dir / "videos"]
+        sid = session_id or session_id_from_stream(stdout)
+        sess = grok_session_folder(dest_dir, sid) if sid else None
+        if sess:
+            folders.extend([sess, sess / "images", sess / "videos"])
+        for folder in folders:
+            for path in collect_new_images(folder, started):
+                add(path)
+        wanted = kind
+        chosen = pick_candidate(candidates, kind)
+        if chosen is None:
+            raise RuntimeError("imagine produced no image file")
+        if chosen.suffix.lower() in {".mp4", ".webm", ".mov", ".mkv"}:
+            kind = "video"
+            root = library_root("video")
+            dest_dir = album_dir(root, album)
+        else:
+            kind = "still"
+            root = library_root("still")
+            dest_dir = album_dir(root, album)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        final = settle_image(chosen, dest_dir, slug)
+        label = title or subject
+        try:
+            rel = final.resolve().relative_to(root.resolve())
+            append_index(root, rel.as_posix(), label)
+        except Exception as exc:
+            log(f"[workshop] imagine index skipped ({exc})")
+        library = library_label(kind)
+        if wanted == "video" and kind != "video":
+            return (
+                f"Ready, sir. Still in {library}; motion needs privacy mode off.",
+                str(final),
+            )
+        return speak_ready(final, title, root=root, library=library), str(final)
 
     def _search(self, snap: dict) -> tuple[str, str]:
+        from memory.working import search_prompt
+
         prompt = str(snap.get("prompt") or "").strip()
-        speak = self._ask(prompt, system=SEARCH_SYSTEM, web=True, max_turns=6, timeout=80)
+        asked = search_prompt(self.home, prompt)
+        speak = self._ask(asked, system=SEARCH_SYSTEM, web=True, max_turns=6, timeout=80)
         speak = " ".join(speak.split())
         if re.search(r"weather|forecast", prompt, re.I):
             cache = self.home.cache / "weather.md"
@@ -216,7 +581,9 @@ class HostWorker:
     def _remember(self, snap: dict) -> tuple[str, str]:
         prompt = str(snap.get("prompt") or "").strip()
         dest = str(snap.get("dest") or remember_dest(prompt))
+        action = str(snap.get("action") or "file")
         bullet = ""
+        parsed_action = ""
         try:
             raw = self._ask(
                 f"Utterance: {prompt}",
@@ -228,20 +595,62 @@ class HostWorker:
             parsed = extract_json(raw)
             if isinstance(parsed, dict):
                 bullet = str(parsed.get("bullet") or "").strip()
+                parsed_action = str(parsed.get("action") or "").strip()
         except Exception as exc:
             log(f"[workshop] remember polish skipped ({exc})")
+        if parsed_action in ("forget", "place", "file"):
+            action = parsed_action
+        if action == "forget":
+            return self._forget(prompt, dest, bullet)
+        if action == "place":
+            place = extract_place(prompt) or bullet
+            place = re.sub(r"^(?:home weather location is\s+)", "", place, flags=re.I)
+            place = place.strip(" .") or "Canterbury, Kent, UK"
+            path = dest_path(self.home, "household")
+            if path is None:
+                raise RuntimeError("refusing vault dest household")
+            remove_matching_lines(path, re.compile(r"weather location", re.I))
+            append_bullet(path, f"Home weather location is {place}")
+            return f"Weather is {place}, sir.", f"place: {place}"
         if not bullet:
             bullet = file_line(prompt)
         if dest == "reminders":
-            from memory.reminders import format_from_utterance
+            from memory.reminders import file_reminder, format_from_utterance
 
             bullet = format_from_utterance(prompt, fallback=bullet)
-        path = dest_path(self.home, dest)
-        if path is None:
-            raise RuntimeError(f"refusing vault dest {dest!r}")
-        wrote = append_bullet(path, bullet)
+            wrote = file_reminder(self.home, bullet)
+        else:
+            path = dest_path(self.home, dest)
+            if path is None:
+                raise RuntimeError(f"refusing vault dest {dest!r}")
+            wrote = append_bullet(path, bullet)
         result = f"{dest}: {bullet}" if wrote else f"{dest}: duplicate"
-        return "", result
+        if not wrote:
+            return "Already noted, sir.", result
+        return "Filed, sir.", result
+
+    def _forget(self, prompt: str, dest: str, bullet: str) -> tuple[str, str]:
+        bits: list[str] = []
+        if re.search(r"\bboy\b", prompt, re.I):
+            bits.append(r"\bboy\b")
+        if re.search(r"\bentrance\b", prompt, re.I):
+            bits.append(r"entrance")
+        if bullet:
+            token = re.escape(" ".join(bullet.split())[:40])
+            if token:
+                bits.append(token)
+        if not bits:
+            return "I couldn't find that, sir.", "forget: none"
+        pattern = re.compile("|".join(bits), re.I)
+        n = 0
+        for name in (dest, "household", "daily"):
+            path = dest_path(self.home, name)
+            if path is None:
+                continue
+            n += remove_matching_lines(path, pattern)
+        if n:
+            return "Removed, sir.", f"forget: {n}"
+        return "I couldn't find that, sir.", "forget: 0"
 
     def _distill(self, snap: dict) -> tuple[str, str]:
         path = Path(str(snap.get("path") or ""))
@@ -265,6 +674,12 @@ class HostWorker:
                 continue
             dest = str(fact.get("dest") or "")
             bullet = str(fact.get("bullet") or "")
+            if dest == "reminders":
+                from memory.reminders import file_reminder
+
+                if file_reminder(self.home, bullet):
+                    written += 1
+                continue
             dest_file = dest_path(self.home, dest)
             if dest_file is None:
                 log(f"[workshop] distill skipped dest {dest!r}")
@@ -297,7 +712,18 @@ class HostWorker:
     def run(self, *, once: bool = False, idle_s: float = 0.25) -> None:
         self.home.ensure()
         self.advertise()
-        log(f"[workshop] {self.worker_id} caps={','.join(self.caps)} home={self.home.root}")
+        if "home" in self.caps:
+            try:
+                from memory.ha import refresh_roster
+
+                refresh_roster(self.home)
+            except Exception:
+                pass
+        extra = f" repo={self.repo}" if self.repo else ""
+        log(
+            f"[workshop] {self.worker_id} caps={','.join(self.caps)} "
+            f"home={self.home.root}{extra}"
+        )
         while True:
             if self.parent_pid and _parent_gone(self.parent_pid):
                 log("[workshop] parent gone, exit")
@@ -331,6 +757,44 @@ def spawn_host_workshop(
         model,
         "--parent-pid",
         str(parent_pid),
+    ]
+    extra: dict = {}
+    if sys.platform == "win32":
+        extra["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        extra["start_new_session"] = True
+    return subprocess.Popen(cmd, cwd=str(root), env=env, **extra)
+
+
+def spawn_shell_workshop(
+    home: JarvisHome,
+    *,
+    grok: Path,
+    model: str,
+    parent_pid: int,
+    repo: Path | None = None,
+) -> subprocess.Popen:
+    root = repo or repo_root()
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
+    cmd = [
+        sys.executable,
+        "-m",
+        "memory.worker",
+        "--data-dir",
+        str(home.root),
+        "--grok",
+        str(grok),
+        "--model",
+        model,
+        "--parent-pid",
+        str(parent_pid),
+        "--caps",
+        ",".join(SHELL_CAPS),
+        "--repo",
+        str(root),
+        "--worker-id",
+        f"shell-{socket.gethostname()}",
     ]
     extra: dict = {}
     if sys.platform == "win32":
@@ -380,6 +844,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--worker-id", default=None)
     p.add_argument("--parent-pid", type=int, default=0)
     p.add_argument("--once", action="store_true")
+    p.add_argument(
+        "--caps",
+        default="",
+        help="comma-separated caps (default: host workshop)",
+    )
+    p.add_argument("--repo", default=None, help="git checkout for the shell cap")
     return p.parse_args(argv)
 
 
@@ -388,12 +858,16 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     home = JarvisHome.discover(args.data_dir)
     grok = Path(args.grok).expanduser() if args.grok else find_grok()
+    caps = tuple(c.strip() for c in (args.caps or "").split(",") if c.strip())
+    repo = Path(args.repo).expanduser().resolve() if args.repo else None
     worker = HostWorker(
         home,
         grok=grok,
         model=args.model,
         worker_id=args.worker_id,
         parent_pid=args.parent_pid,
+        caps=caps or HOST_CAPS,
+        repo=repo,
     )
     worker.run(once=args.once)
 

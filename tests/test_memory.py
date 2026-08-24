@@ -31,6 +31,7 @@ class HomeTests(unittest.TestCase):
         self.assertTrue((self.home.vault / "never.md").is_file())
         self.assertTrue((self.home.vault / "reminders.md").is_file())
         self.assertTrue((self.home.secrets / "README.md").is_file())
+        self.assertTrue(self.home.imagine.is_dir())
         self.assertFalse((self.home.secrets / "ha.token").exists())
         boot.write_text("edited by matt\n", encoding="utf-8")
         self.home.ensure()
@@ -82,6 +83,10 @@ class PromptTests(unittest.TestCase):
         huge = [("boot", "X" * 20_000)]
         prompt = build_system_prompt(huge, budget=500)
         self.assertTrue(prompt.startswith(SPEECH_RULES[:40]))
+        self.assertNotIn("workbench is not connected yet", SPEECH_RULES)
+        self.assertIn("Never say you switched a light", SPEECH_RULES)
+        self.assertNotIn("Do not discuss microphones", SPEECH_RULES)
+        self.assertIn("House-wide wireless mics", SPEECH_RULES)
         extra = prompt[len(SPEECH_RULES) :]
         self.assertLessEqual(len(extra), 500 + 80)
         self.assertIn("Notes", prompt)
@@ -112,6 +117,17 @@ class PromptTests(unittest.TestCase):
         labels = [n[0] for n in notes]
         self.assertIn("weather", labels)
         self.assertIn("reminders", labels)
+
+    def test_house_roster_in_boot(self) -> None:
+        (self.home.cache / "ha-roster.md").write_text(
+            "Lights: Living Room Main Light in Living Room (off).\n",
+            encoding="utf-8",
+        )
+        notes = load_boot_notes(self.home, today=date(2026, 8, 22))
+        labels = [n[0] for n in notes]
+        self.assertIn("house", labels)
+        bundle = "\n".join(body for _label, body in notes)
+        self.assertIn("Living Room Main Light", bundle)
 
 
 class SessionDistillTests(unittest.TestCase):
@@ -174,6 +190,17 @@ class JobBoardTests(unittest.TestCase):
         evs = self.board.events(jid)
         self.assertEqual(evs[0]["cap"], "search")
         self.assertEqual(evs[-1]["result"], "rain")
+
+    def test_status_line_tells_the_truth(self) -> None:
+        self.assertIn(
+            "Nothing queued",
+            self.board.status_line("have you initiated the animation yet?"),
+        )
+        jid = self.board.enqueue("imagine", "assembly animation")
+        line = self.board.status_line(
+            "is the workshop busy", pending_ids={jid}
+        )
+        self.assertIn("imagine", line.lower())
 
     def test_rejects_path_escape(self) -> None:
         with self.assertRaises(ValueError):

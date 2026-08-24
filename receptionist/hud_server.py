@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import socket
 import ssl
 import subprocess
@@ -49,28 +50,48 @@ def set_state(state: str, line: str = "", level: float = 0.0) -> None:
         _state["level"] = float(level)
 
 
+def _add_lan_ip(found: list[str], ip: str) -> None:
+    ip = (ip or "").strip()
+    if not ip or ":" in ip:
+        return
+    if ip.startswith("127.") or ip.startswith("169.254."):
+        return
+    if ip not in found:
+        found.append(ip)
+
+
 def lan_ips() -> list[str]:
     found: list[str] = []
     try:
         hostname = socket.gethostname()
         for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
-            ip = info[4][0]
-            if ip and not ip.startswith("127.") and ip not in found:
-                found.append(ip)
+            _add_lan_ip(found, info[4][0])
     except OSError:
         pass
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
+        _add_lan_ip(found, s.getsockname()[0])
         s.close()
-        if ip and not ip.startswith("127.") and ip not in found:
-            found.append(ip)
     except OSError:
         pass
-    # Windows Mobile Hotspot / ICS default
-    if "192.168.137.1" not in found:
-        found.append("192.168.137.1")
+    try:
+        out = subprocess.check_output(["hostname", "-I"], text=True, timeout=2)
+        for ip in out.split():
+            _add_lan_ip(found, ip)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show"], text=True, timeout=2
+        )
+        for hit in re.finditer(r"inet\s+(\d+\.\d+\.\d+\.\d+)", out):
+            _add_lan_ip(found, hit.group(1))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # Hotspot gateways (Windows ICS / Ubuntu nmcli)
+    for ip in ("192.168.137.1", "10.42.0.1"):
+        _add_lan_ip(found, ip)
     return found
 
 
@@ -156,9 +177,16 @@ class Handler(BaseHTTPRequestHandler):
         if not target.is_file():
             self._send(b"not found", "text/plain", 404)
             return
-        ctype = "text/html" if target.suffix in (".html", "") else "application/octet-stream"
-        if target.suffix == ".html":
-            ctype = "text/html"
+        ctypes = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".mjs": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".json": "application/json",
+            ".svg": "image/svg+xml",
+            ".woff2": "font/woff2",
+        }
+        ctype = ctypes.get(target.suffix.lower(), "application/octet-stream")
         self._send(target.read_bytes(), ctype)
 
     def do_POST(self) -> None:
@@ -176,8 +204,12 @@ class Handler(BaseHTTPRequestHandler):
         if not job.event.wait(120):
             self._send(b'{"error":"timeout"}', "application/json", 504)
             return
-        if job.error:
-            self._send(json.dumps({"error": job.error, "text": job.text}).encode(), "application/json", 500)
+        if job.error and not job.mp3:
+            self._send(
+                json.dumps({"error": job.error, "text": job.text}).encode(),
+                "application/json",
+                500,
+            )
             return
         if job.mp3:
             self.send_response(200)
@@ -249,6 +281,7 @@ def start_hud(open_browser: bool = True) -> None:
         print(f"         {scheme}://{ip}:{PORT}/phone", flush=True)
     print("[hud] Safari will warn about the certificate — tap Advanced, then Visit this website.", flush=True)
     print("[hud] Allow microphone when asked. Hold the gold button to talk.", flush=True)
+    print("[hud] Phone mic/speaker only work on the /phone page over https.", flush=True)
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(local)).start()
 

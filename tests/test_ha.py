@@ -14,6 +14,8 @@ from memory.ha import (
     pending_clarify,
     pending_confirm,
     resolve_entities,
+    roster_markdown,
+    roster_path,
     run_home,
 )
 from memory.home import JarvisHome
@@ -31,9 +33,30 @@ def _ent(eid: str, name: str, state: str = "off", **attrs) -> dict:
 STATES = [
     _ent("light.kitchen", "Kitchen", "off"),
     _ent("light.kitchen_sink", "Kitchen sink", "off"),
+    _ent("switch.kitchen_do_not_disturb", "Kitchen Do not disturb", "off"),
     _ent("light.lounge", "Lounge", "on"),
-    _ent("light.lamp", "Lamp", "off"),
-    _ent("light.jaks_light", "Jak\u2019s Light", "off"),
+    _ent(
+        "light.living_room_living_room_main_light",
+        "Living Room Main Light",
+        "off",
+        supported_color_modes=["color_temp", "hs"],
+        area="Living Room",
+    ),
+    _ent(
+        "light.lamp",
+        "Lamp",
+        "off",
+        supported_color_modes=["color_temp", "hs"],
+        area="Living Room",
+    ),
+    _ent(
+        "light.garden_light",
+        "Garden Light",
+        "off",
+        supported_color_modes=["onoff"],
+        area="Back Door",
+    ),
+    _ent("light.jaks_light", "Jak\u2019s Light", "off", area="Jak's Room"),
     _ent("lock.front_door", "Front door", "locked"),
     _ent("cover.garage_door", "Garage door", "closed"),
     _ent("climate.hallway", "Hallway thermostat", "heat", current_temperature=19, temperature=20),
@@ -61,10 +84,20 @@ class FakeHA:
             new = "open"
         if service == "close_cover":
             new = "closed"
+        pct = data.get("brightness_pct")
         if new:
             for ent in self.states:
                 if ent["entity_id"] in ids:
                     ent["state"] = new
+                    if service == "turn_on" and pct is not None:
+                        attrs = dict(ent.get("attributes") or {})
+                        attrs["brightness"] = int(int(pct) * 255 / 100)
+                        attrs["brightness_pct"] = int(pct)
+                        ent["attributes"] = attrs
+                    if service == "turn_off":
+                        attrs = dict(ent.get("attributes") or {})
+                        attrs["brightness"] = None
+                        ent["attributes"] = attrs
         return []
 
 
@@ -93,6 +126,40 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(cmd.action, "on")
         self.assertEqual(cmd.hints, ("lamp",))
 
+    def test_too_bright_living_room(self) -> None:
+        cmd = parse_command("it is too bright in the living room jarvis")
+        self.assertIsNotNone(cmd)
+        assert cmd is not None
+        self.assertEqual(cmd.action, "dim")
+        self.assertEqual(cmd.domain, "light")
+        self.assertEqual(cmd.area, "living")
+        self.assertEqual(cmd.brightness, 30)
+
+    def test_too_dark_and_percent(self) -> None:
+        cmd = parse_command("it's too dark in the kitchen")
+        self.assertEqual(cmd.action, "brighten")
+        self.assertEqual(cmd.area, "kitchen")
+        cmd = parse_command("set the living room to 20 percent")
+        self.assertEqual(cmd.action, "dim")
+        self.assertEqual(cmd.brightness, 20)
+        self.assertEqual(cmd.area, "living")
+        for said in (
+            "it is a little dark in the living room",
+            "it is still dark in the living room jarvis",
+        ):
+            with self.subTest(said=said):
+                cmd = parse_command(said)
+                self.assertIsNotNone(cmd)
+                assert cmd is not None
+                self.assertEqual(cmd.action, "brighten")
+                self.assertEqual(cmd.domain, "light")
+                self.assertEqual(cmd.area, "living")
+
+    def test_what_lights(self) -> None:
+        cmd = parse_command("what lights are on")
+        self.assertEqual(cmd.action, "query")
+        self.assertTrue(cmd.all_of)
+
     def test_unlock(self) -> None:
         cmd = parse_command("unlock the front door")
         self.assertEqual(cmd.action, "unlock")
@@ -115,6 +182,16 @@ class ResolveTests(unittest.TestCase):
         self.assertIn("light.kitchen", ids)
         self.assertIn("light.kitchen_sink", ids)
         self.assertNotIn("light.lounge", ids)
+        self.assertNotIn("switch.kitchen_do_not_disturb", ids)
+
+    def test_living_room_includes_lamp_via_area(self) -> None:
+        cmd = parse_command("turn on the living room lights")
+        ents = resolve_entities(STATES, cmd)
+        ids = {e["entity_id"] for e in ents}
+        self.assertIn("light.living_room_living_room_main_light", ids)
+        self.assertIn("light.lamp", ids)
+        self.assertNotIn("light.lounge", ids)
+        self.assertNotIn("light.kitchen", ids)
 
     def test_ambiguous_lights_without_room(self) -> None:
         cmd = HouseCommand(action="on", domain="light", area=None)
@@ -235,6 +312,185 @@ class RunTests(unittest.TestCase):
         self.assertEqual(self.ha.calls[0][2]["entity_id"], "light.jaks_light")
         self.assertRegex(speak, r"Jak")
 
+    def test_too_bright_without_room_asks(self) -> None:
+        speak, result = run_home(
+            self.home, {"prompt": "it's too bright"}, transport=self.ha
+        )
+        self.assertEqual(result, "ambiguous")
+        self.assertIn("Which lights", speak)
+        self.assertEqual(self.ha.calls, [])
+
+    def test_too_bright_dims_living_room(self) -> None:
+        for eid in (
+            "light.living_room_living_room_main_light",
+            "light.lamp",
+        ):
+            for ent in self.ha.states:
+                if ent["entity_id"] == eid:
+                    ent["state"] = "on"
+                    attrs = dict(ent.get("attributes") or {})
+                    attrs["brightness"] = 255
+                    ent["attributes"] = attrs
+        speak, result = run_home(
+            self.home,
+            {"prompt": "it is too bright in the living room jarvis"},
+            transport=self.ha,
+        )
+        self.assertEqual(result, "done")
+        self.assertIn("dimmed", speak.lower())
+        self.assertTrue(self.ha.calls)
+        domain, service, data = self.ha.calls[0]
+        self.assertEqual(domain, "light")
+        self.assertEqual(service, "turn_on")
+        self.assertEqual(data.get("brightness_pct"), 30)
+        ids = data["entity_id"]
+        if isinstance(ids, str):
+            ids = [ids]
+        self.assertIn("light.living_room_living_room_main_light", ids)
+        self.assertIn("light.lamp", ids)
+        self.assertIn("Living Room Main Light", roster_path(self.home).read_text(encoding="utf-8"))
+
+    def test_too_bright_turns_off_onoff_garden(self) -> None:
+        for ent in self.ha.states:
+            if ent["entity_id"] == "light.garden_light":
+                ent["state"] = "on"
+        speak, result = run_home(
+            self.home,
+            {"prompt": "too bright in the garden"},
+            transport=self.ha,
+        )
+        self.assertEqual(result, "done")
+        self.assertEqual(self.ha.calls[0][1], "turn_off")
+        self.assertIn("Garden", speak)
+
+    def test_too_bright_already_dim_turns_off(self) -> None:
+        for ent in self.ha.states:
+            if ent["entity_id"] == "light.living_room_living_room_main_light":
+                ent["state"] = "on"
+                attrs = dict(ent.get("attributes") or {})
+                attrs["brightness"] = 50
+                ent["attributes"] = attrs
+        speak, result = run_home(
+            self.home,
+            {"prompt": "it's too bright in the living room"},
+            transport=self.ha,
+        )
+        self.assertEqual(result, "done")
+        self.assertEqual(self.ha.calls[0][1], "turn_off")
+        self.assertIn("off", speak.lower())
+
+    def test_too_dark_turns_living_room_on(self) -> None:
+        speak, result = run_home(
+            self.home,
+            {"prompt": "it's too dark in the living room"},
+            transport=self.ha,
+        )
+        self.assertEqual(result, "done")
+        self.assertEqual(self.ha.calls[0][1], "turn_on")
+        self.assertEqual(self.ha.calls[0][2].get("brightness_pct"), 80)
+
+    def test_a_little_dark_turns_living_room_on(self) -> None:
+        speak, result = run_home(
+            self.home,
+            {"prompt": "it is a little dark in the living room"},
+            transport=self.ha,
+        )
+        self.assertEqual(result, "done")
+        self.assertEqual(self.ha.calls[0][1], "turn_on")
+        ids = self.ha.calls[0][2]["entity_id"]
+        if isinstance(ids, str):
+            ids = [ids]
+        self.assertIn("light.living_room_living_room_main_light", ids)
+        self.assertIn("light.lamp", ids)
+
+    def test_kitchen_lights_skip_dnd_switch(self) -> None:
+        run_home(
+            self.home,
+            {"prompt": "turn on the kitchen lights"},
+            transport=self.ha,
+        )
+        ids = []
+        for _d, _s, data in self.ha.calls:
+            eid = data.get("entity_id")
+            ids.extend(eid if isinstance(eid, list) else [eid])
+        self.assertIn("light.kitchen", ids)
+        self.assertNotIn("switch.kitchen_do_not_disturb", ids)
+
+    def test_what_lights_lists_them(self) -> None:
+        speak, result = run_home(
+            self.home, {"prompt": "what lights do we have"}, transport=self.ha
+        )
+        self.assertEqual(result, "query")
+        self.assertIn("Lamp", speak)
+        self.assertIn("Kitchen", speak)
+
+    def test_confident_kitchen_skips_mapper(self) -> None:
+        called: list[int] = []
+
+        def mapper(prompt: str, roster: list[dict]):
+            called.append(1)
+            return None
+
+        speak, result = run_home(
+            self.home,
+            {"prompt": "turn on the kitchen lights"},
+            transport=self.ha,
+            mapper=mapper,
+        )
+        self.assertEqual(result, "done")
+        self.assertEqual(called, [])
+        self.assertTrue(self.ha.calls)
+
+    def test_unconfident_query_uses_mapper(self) -> None:
+        def mapper(prompt: str, roster: list[dict]) -> HouseCommand:
+            self.assertIn("gloomy", prompt)
+            return HouseCommand(
+                action="on",
+                domain="light",
+                area="living",
+                entity_ids=(
+                    "light.living_room_living_room_main_light",
+                    "light.lamp",
+                ),
+            )
+
+        speak, result = run_home(
+            self.home,
+            {"prompt": "it is gloomy in the living room"},
+            transport=self.ha,
+            mapper=mapper,
+        )
+        self.assertEqual(result, "done")
+        self.assertEqual(self.ha.calls[0][1], "turn_on")
+
+    def test_mapper_when_local_misses(self) -> None:
+        def mapper(prompt: str, roster: list[dict]) -> HouseCommand:
+            self.assertTrue(roster)
+            self.assertIn("sofa", prompt)
+            return HouseCommand(
+                action="off",
+                domain="light",
+                area=None,
+                entity_ids=("light.lamp",),
+            )
+
+        speak, result = run_home(
+            self.home,
+            {"prompt": "kill the glow by the sofa"},
+            transport=self.ha,
+            mapper=mapper,
+        )
+        self.assertEqual(result, "done")
+        self.assertEqual(self.ha.calls[0][2]["entity_id"], "light.lamp")
+        self.assertIn("Lamp", speak)
+
+    def test_roster_markdown_skips_junk(self) -> None:
+        text = roster_markdown(STATES)
+        self.assertIn("Living Room Main Light", text)
+        self.assertIn("Lamp", text)
+        self.assertNotIn("Do not disturb", text)
+        self.assertIn("Living Room", text)
+
 
 class IntentHomeTests(unittest.TestCase):
     def test_gate_phrases(self) -> None:
@@ -246,6 +502,11 @@ class IntentHomeTests(unittest.TestCase):
         )
         self.assertEqual(classify("is the garage closed").cap, HOME.cap)
         self.assertEqual(classify("unlock the front door").cap, HOME.cap)
+        self.assertEqual(
+            classify("it is too bright in the living room jarvis").cap, HOME.cap
+        )
+        self.assertEqual(classify("dim the living room").cap, HOME.cap)
+        self.assertEqual(classify("what lights are on").cap, HOME.cap)
         self.assertTrue(is_house_followup("kitchen"))
 
     def test_yes_enqueues_when_pending(self) -> None:

@@ -135,6 +135,47 @@ class JobBoard:
                 found.append(snap)
         return found
 
+    def status_line(self, asked: str = "", pending_ids: set[str] | None = None) -> str:
+        """Honest spoken status from the board. The desk Grok must not invent this."""
+        pending_ids = set(pending_ids or ())
+        asked_l = (asked or "").lower()
+        active: list[dict] = []
+        seen: set[str] = set()
+        for jid in list(pending_ids):
+            snap = self.snapshot(jid)
+            if snap.get("event") in ("enqueued", "claimed"):
+                active.append(snap)
+                seen.add(jid)
+        now = datetime.now(timezone.utc)
+        for jid in reversed(self.job_ids()):
+            if jid in seen:
+                continue
+            snap = self.snapshot(jid)
+            ev = snap.get("event")
+            if ev not in ("enqueued", "claimed"):
+                continue
+            if self._age_s(str(snap.get("ts") or ""), now) > 1800:
+                continue
+            active.append(snap)
+            if len(active) >= 4:
+                break
+        if active:
+            caps = []
+            for snap in active:
+                cap = str(snap.get("cap") or "job")
+                if cap not in caps:
+                    caps.append(cap)
+            return f"Still on {', '.join(caps)}, sir."
+        if re.search(
+            r"\b(?:animation|pdf|image|picture|video|drawing|document)\b",
+            asked_l,
+        ):
+            return (
+                "Nothing queued for that, sir. "
+                "Talking at the desk does not start Imagine or a PDF."
+            )
+        return "Nothing on the workbench, sir."
+
     def active(self, caps: list[str] | None = None) -> list[dict]:
         want = set(caps) if caps is not None else None
         found: list[dict] = []
@@ -179,9 +220,12 @@ class JobBoard:
         job_id: str,
         timeout: float = 60,
         interval: float = 0.2,
+        abort=None,
     ) -> dict | None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if abort is not None and abort():
+                return None
             st = self.latest_status(job_id)
             if st in TERMINAL:
                 return self.snapshot(job_id)

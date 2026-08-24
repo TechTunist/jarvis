@@ -56,6 +56,10 @@ class JarvisHome:
         return self.root / "cache"
 
     @property
+    def imagine(self) -> Path:
+        return self.root / "imagine"
+
+    @property
     def secrets(self) -> Path:
         return self.root / "secrets"
 
@@ -74,6 +78,7 @@ class JarvisHome:
             self.workshops,
             self.sessions,
             self.cache,
+            self.imagine,
             self.secrets,
         ):
             p.mkdir(parents=True, exist_ok=True)

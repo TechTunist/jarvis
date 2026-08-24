@@ -8,7 +8,14 @@ from pathlib import Path
 
 from memory.home import JarvisHome
 from memory.jobs import JobBoard
-from memory.reminders import format_from_utterance, from_utterance, take_due
+from memory.reminders import (
+    collapse_file,
+    file_reminder,
+    format_from_utterance,
+    from_utterance,
+    similar_body,
+    take_due,
+)
 from memory.worker import HostWorker
 
 
@@ -52,6 +59,49 @@ class DueTests(unittest.TestCase):
         self.assertEqual(again, [])
         nxt = take_due(self.home, now=datetime(2026, 8, 24, 20, 5))
         self.assertEqual(len(nxt), 1)
+
+    def test_near_duplicate_bullets_speak_once(self) -> None:
+        path = self.home.vault / "reminders.md"
+        path.write_text(
+            "# Reminders\n\n"
+            "- 20:00 daily - Check Jarvis codebase\n"
+            "- 20:00 daily - check codebase\n"
+            "- 20:00 daily - check Jarvis codebase\n"
+            "- 20:00 daily - Check the Jarvis codebase\n",
+            encoding="utf-8",
+        )
+        lines = take_due(self.home, now=datetime(2026, 8, 23, 20, 0))
+        self.assertEqual(len(lines), 1)
+        self.assertIn("codebase", lines[0].lower())
+        again = take_due(self.home, now=datetime(2026, 8, 23, 20, 1))
+        self.assertEqual(again, [])
+        body = path.read_text(encoding="utf-8")
+        self.assertEqual(body.lower().count("codebase"), 1)
+
+    def test_file_reminder_skips_similar(self) -> None:
+        path = self.home.vault / "reminders.md"
+        path.write_text("# Reminders\n\n", encoding="utf-8")
+        self.assertTrue(file_reminder(self.home, "20:00 daily - Check Jarvis codebase"))
+        self.assertFalse(file_reminder(self.home, "20:00 daily - check the jarvis codebase"))
+        body = path.read_text(encoding="utf-8")
+        self.assertEqual(body.lower().count("codebase"), 1)
+
+    def test_similar_body(self) -> None:
+        self.assertTrue(similar_body("Check Jarvis codebase", "check the codebase"))
+        self.assertFalse(similar_body("check the bins", "check the codebase"))
+
+    def test_collapse_keeps_longest(self) -> None:
+        path = self.home.vault / "reminders.md"
+        path.write_text(
+            "# Reminders\n\n"
+            "- 20:00 daily - check codebase\n"
+            "- 20:00 daily - Check the Jarvis codebase\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(collapse_file(path), 1)
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("Check the Jarvis codebase", body)
+        self.assertNotIn("- 20:00 daily - check codebase\n", body)
 
 
 class WorkerReminderTests(unittest.TestCase):

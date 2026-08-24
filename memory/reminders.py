@@ -94,6 +94,39 @@ def reminder_body(text: str) -> str:
     return t[0].upper() + t[1:]
 
 
+_NOISE = re.compile(
+    r"\b(?:the|a|an|to|please|jarvis|your|my|our|me)\b",
+    re.I,
+)
+
+
+def reminder_norm(text: str) -> str:
+    t = " ".join((text or "").lower().split())
+    t = t.strip(" .,-")
+    t = _NOISE.sub(" ", t)
+    return " ".join(t.split())
+
+
+def similar_body(a: str, b: str) -> bool:
+    na, nb = reminder_norm(a), reminder_norm(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    short, long_ = (na, nb) if len(na) <= len(nb) else (nb, na)
+    if len(short.split()) < 2:
+        return False
+    return short in long_
+
+
+def similar_reminder(a: Reminder, b: Reminder) -> bool:
+    if a.hhmm != b.hhmm or bool(a.daily) != bool(b.daily):
+        return False
+    if (a.once_on or "") != (b.once_on or ""):
+        return False
+    return similar_body(a.text, b.text)
+
+
 def from_utterance(text: str, *, today: str | None = None) -> Reminder | None:
     hhmm = parse_time(text)
     if not hhmm:
@@ -111,23 +144,97 @@ def format_from_utterance(text: str, fallback: str = "") -> str:
     return fallback or file_line(text)
 
 
+def parse_one(text: str) -> Reminder | None:
+    raw = " ".join((text or "").split()).lstrip("- ").strip()
+    m = _LINE.match("- " + raw)
+    if m:
+        return Reminder(
+            hhmm=m.group(2),
+            text=m.group(4).strip(),
+            daily=bool(m.group(3)),
+            once_on=m.group(1),
+        )
+    return from_utterance(text)
+
+
 def parse_file(path: Path) -> list[Reminder]:
     if not path.is_file():
         return []
     found: list[Reminder] = []
     for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        m = _LINE.match(raw.strip())
-        if not m:
+        stripped = raw.strip()
+        if not _LINE.match(stripped):
             continue
-        found.append(
-            Reminder(
-                hhmm=m.group(2),
-                text=m.group(4).strip(),
-                daily=bool(m.group(3)),
-                once_on=m.group(1),
-            )
-        )
+        rem = parse_one(stripped)
+        if rem:
+            found.append(rem)
     return found
+
+
+def _append_line(path: Path, bullet: str) -> bool:
+    bullet = " ".join((bullet or "").split()).lstrip("- ").strip()
+    if not bullet:
+        return False
+    line = f"- {bullet}\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        text = path.read_text(encoding="utf-8")
+        if bullet in text:
+            return False
+        with path.open("a", encoding="utf-8") as fh:
+            if text and not text.endswith("\n"):
+                fh.write("\n")
+            fh.write(line)
+    else:
+        path.write_text(line, encoding="utf-8")
+    return True
+
+
+def collapse_file(path: Path) -> int:
+    """Keep one bullet per similar reminder. Returns how many lines dropped."""
+    if not path.is_file():
+        return 0
+    raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    kept: list[Reminder] = []
+    out: list[str] = []
+    dropped = 0
+    for raw in raw_lines:
+        stripped = raw.strip()
+        if not _LINE.match(stripped):
+            out.append(raw)
+            continue
+        rem = parse_one(stripped)
+        if rem is None:
+            out.append(raw)
+            continue
+        twin = next((k for k in kept if similar_reminder(rem, k)), None)
+        if twin is None:
+            kept.append(rem)
+            out.append(f"- {rem.bullet()}")
+            continue
+        dropped += 1
+        if len(rem.text) > len(twin.text):
+            kept[kept.index(twin)] = rem
+            for i, line in enumerate(out):
+                if line.strip() == f"- {twin.bullet()}":
+                    out[i] = f"- {rem.bullet()}"
+                    break
+    if dropped:
+        text = "\n".join(out).rstrip() + "\n"
+        path.write_text(text, encoding="utf-8")
+    return dropped
+
+
+def file_reminder(home: JarvisHome, text: str) -> bool:
+    path = reminders_path(home)
+    collapse_file(path)
+    rem = parse_one(text)
+    if rem is None:
+        return _append_line(path, " ".join((text or "").split()).lstrip("- "))
+    existing = parse_file(path)
+    if any(similar_reminder(rem, e) for e in existing):
+        return False
+    return _append_line(path, rem.bullet())
 
 
 def _fired_path(home: JarvisHome) -> Path:
@@ -150,32 +257,43 @@ def _save_fired(home: JarvisHome, data: dict) -> None:
     _fired_path(home).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
+def _is_due(rem: Reminder, today: str, cur: str) -> bool:
+    if rem.daily:
+        return cur >= rem.hhmm
+    if rem.once_on:
+        if today < rem.once_on:
+            return False
+        if today == rem.once_on:
+            return cur >= rem.hhmm
+        return True
+    return cur >= rem.hhmm
+
+
 def take_due(home: JarvisHome, now: datetime | None = None) -> list[str]:
-    """Speakable lines for reminders due (or overdue) today, once each."""
+    """Speakable lines for reminders due (or overdue) today, once each cluster."""
     now = now or datetime.now().astimezone()
     today = now.date().isoformat()
     cur = f"{now.hour:02d}:{now.minute:02d}"
+    path = reminders_path(home)
+    due = [rem for rem in parse_file(path) if _is_due(rem, today, cur)]
+    if due:
+        collapse_file(path)
+        due = [rem for rem in parse_file(path) if _is_due(rem, today, cur)]
     fired = _load_fired(home)
     spoken: list[str] = []
-    for rem in parse_file(reminders_path(home)):
-        if rem.daily:
-            if cur < rem.hhmm:
-                continue
-        elif rem.once_on:
-            if today < rem.once_on:
-                continue
-            if today == rem.once_on and cur < rem.hhmm:
-                continue
-            if today > rem.once_on:
-                pass
-        else:
-            if cur < rem.hhmm:
-                continue
-        stamp_key = rem.key
-        if fired.get(stamp_key) == today:
+    used: set[int] = set()
+    for rem in due:
+        if id(rem) in used:
             continue
-        fired[stamp_key] = today
-        spoken.append(f"It's time, sir. {rem.text}.")
+        cluster = [other for other in due if similar_reminder(rem, other)]
+        if all(fired.get(r.key) == today for r in cluster):
+            used.update(id(r) for r in cluster)
+            continue
+        pick = max(cluster, key=lambda r: (len(r.text), r.text))
+        for r in cluster:
+            fired[r.key] = today
+            used.add(id(r))
+        spoken.append(f"It's time, sir. {pick.text}.")
     if spoken:
         _save_fired(home, fired)
     return spoken

@@ -37,5 +37,24 @@ cd ~/jarvis
 
 Unlocks, garage, and doors require a spoken **yes** before they run. Lights do not.
 
+## BearJacked / Supabase (training log)
+
+Read-only. Never commit this file.
+
+```
+~/.jarvis/secrets/forge.json
+```
+
+```json
+{
+  "url": "https://YOUR-PROJECT.supabase.co",
+  "anon_key": "YOUR_ANON_KEY",
+  "email": "your-login@email",
+  "password": "your-app-password"
+}
+```
+
+chmod 600. Jarvis signs in as you so RLS still applies. He does not write workouts.
+
 A later Pi-side proxy is how the office talks to the house without this token
 leaving home. Same LAN does not need that yet.
