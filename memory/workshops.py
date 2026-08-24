@@ -65,7 +65,7 @@ class WorkshopRegistry:
     def prompt_line(self) -> str:
         live = self.live()
         if not live:
-            return "Workers: none. Workbench is not connected."
+            return "Workers: none. Hands are not connected."
         parts = []
         for w in live:
             caps = ", ".join(w.get("caps") or []) or "none"

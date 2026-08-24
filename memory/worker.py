@@ -1,7 +1,7 @@
-"""Host workshop: heartbeat + pull jobs.
+"""Hands thread: heartbeat + pull jobs.
 
-Talk stays tool-free. This process is the hands: grok -p with web search for
-lookup, Grok Imagine for stills, Python-only writes into allowed vault files.
+The mouth stays free. This process is Jarvis's other thread: grok -p with web
+search, Grok Imagine, vault writes, house, and coding on advertised checkouts.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from memory.grokrun import extract_json, find_grok, run_prompt, run_prompt_resul
 from memory.home import JarvisHome
 from memory.intent import file_line, remember_dest
 from memory.jobs import JobBoard
+from memory.prompt import HANDS_RULES, JARVIS_PERSONA
 from memory.shell import SHELL_CAPS, repo_root
 from memory.workshops import WorkshopRegistry
 
@@ -32,19 +33,20 @@ HOST_CAPS = (
     "imagine",
     "docs",
     "forge",
+    "see",
+    "diagnose",
 )
 FORGE_SYSTEM = (
-    "You have Matt's training log. Answer what he asked in one or two short "
-    "spoken sentences. No markdown, no lists, no preamble, no medical advice. "
-    "If the log is empty or missing, say so. Do not invent lifts."
+    JARVIS_PERSONA
+    + "You have Matt's training log. Answer what he asked. "
+    "No medical advice. If the log is empty or missing, say so. Do not invent lifts."
 )
 SEARCH_SYSTEM = (
-    "You are Jarvis's workshop, not the front desk. Search the web if needed. "
-    "The desk already said it would look. Do not say you will check, look, or "
-    "get back — answer now. At most two short spoken sentences. "
-    "No announcing yourself. No markdown, no lists, no URLs unless "
-    "essential. No preamble. If a default weather location is given and Matt "
-    "does not name a city, use that location. Do not ask which city."
+    HANDS_RULES
+    + "Search the web if needed. Do not say you will check, look, or "
+    "get back — answer now. No URLs unless essential. "
+    "If a default weather location is given and Matt does not name a city, "
+    "use that location. Do not ask which city."
 )
 REMEMBER_SYSTEM = (
     'Return JSON only: {"bullet": "one short durable fact", '
@@ -74,8 +76,8 @@ DISTILL_SYSTEM = (
     'If nothing durable, {"facts": []}.'
 )
 IMAGINE_SYSTEM = (
-    "You are Jarvis's workshop, not the front desk. "
-    "Call the image_gen tool once with a strong visual prompt for the picture "
+    HANDS_RULES
+    + "Call the image_gen tool once with a strong visual prompt for the picture "
     "Matt asked for. Do not call image_edit, image_to_video, or any other tool. "
     "Do not write code or touch the git checkout. After the image is saved, "
     "reply with JSON only: "
@@ -83,8 +85,8 @@ IMAGINE_SYSTEM = (
     "No markdown, no preamble."
 )
 IMAGINE_VIDEO_SYSTEM = (
-    "You are Jarvis's workshop, not the front desk. "
-    "Matt asked for a rotating or animated clip. Call image_gen once for a "
+    HANDS_RULES
+    + "Matt asked for a rotating or animated clip. Call image_gen once for a "
     "clean hero still, then image_to_video once to animate a slow rotation "
     "or orbit (about 6 seconds). Do not write code. If video generation is "
     "blocked, keep the still and return that path. Reply with JSON only: "
@@ -92,8 +94,8 @@ IMAGINE_VIDEO_SYSTEM = (
     '"kind": "video"|"still"}. No markdown, no preamble.'
 )
 IMAGINE_ASSEMBLY_SYSTEM = (
-    "You are Jarvis's workshop, not the front desk. "
-    "Matt wants an assembly animation of a real kit, not a finished mystery gadget. "
+    HANDS_RULES
+    + "Matt wants an assembly animation of a real kit, not a finished mystery gadget. "
     "Read the brief. Name the actual parts in the image_gen prompt "
     "(board, microphone capsule, cells, BMS with USB-C, switch, LED, enclosure). "
     "First still: those parts laid out on a workbench, labelled enough to tell apart, "
@@ -229,7 +231,7 @@ class HostWorker:
         home: JarvisHome,
         *,
         grok: Path | None = None,
-        model: str = "grok-4.5",
+        model: str = "grok-4.6",
         worker_id: str | None = None,
         complete: CompleteFn | None = None,
         parent_pid: int = 0,
@@ -254,6 +256,8 @@ class HostWorker:
         self.board = JobBoard(home)
         self.registry = WorkshopRegistry(home)
         self._last_beat = 0.0
+        self._job_id = ""
+        self._audience = ""
 
     def advertise(self) -> None:
         extra: dict = {
@@ -262,7 +266,12 @@ class HostWorker:
             "model": self.model,
         }
         if self.repo:
-            extra["roots"] = [str(self.repo)]
+            if "shell" in self.caps:
+                from memory.apps import roots_for_shell
+
+                extra["roots"] = roots_for_shell(self.home, self.repo)
+            else:
+                extra["roots"] = [str(self.repo)]
         self.registry.advertise(self.worker_id, list(self.caps), **extra)
         self._last_beat = time.monotonic()
 
@@ -280,18 +289,29 @@ class HostWorker:
         timeout: float = 90,
         tools: str | None = None,
         cwd: Path | str | None = None,
+        effort: str = "low",
+        disallowed: str | None = None,
+        subagents: bool = False,
+        image: Path | str | None = None,
     ) -> str:
+        asked = (self._audience or "") + prompt
         if self.complete is not None:
+            if self._job_cancelled():
+                raise InterruptedError("cancelled")
             return self.complete(
-                prompt,
+                asked,
                 system=system,
                 web=web,
                 max_turns=max_turns,
                 tools=tools,
                 cwd=cwd,
+                effort=effort,
+                disallowed=disallowed,
+                subagents=subagents,
+                image=image,
             )
         return run_prompt(
-            prompt,
+            asked,
             grok=self.grok,
             model=self.model,
             system=system,
@@ -300,27 +320,62 @@ class HostWorker:
             timeout=timeout,
             tools=tools,
             cwd=cwd,
+            effort=effort,
+            disallowed=disallowed,
+            subagents=subagents,
+            abort=self._job_cancelled,
+            image=image,
         )
 
+    def _job_cancelled(self) -> bool:
+        jid = self._job_id
+        return bool(jid) and self.board.latest_status(jid) == "cancelled"
+
     def handle(self, snap: dict) -> tuple[str, str]:
-        cap = str(snap.get("cap") or "")
-        if cap == "search":
-            return self._search(snap)
-        if cap == "vault-write":
-            return self._remember(snap)
-        if cap == "distill":
-            return self._distill(snap)
-        if cap == "home":
-            return self._home(snap)
-        if cap == "imagine":
-            return self._imagine(snap)
-        if cap == "docs":
-            return self._docs(snap)
-        if cap == "shell":
-            return self._shell(snap)
-        if cap == "forge":
-            return self._forge(snap)
-        raise RuntimeError(f"unsupported cap {cap!r}")
+        who = str(snap.get("who") or "").strip()
+        address = str(snap.get("address") or "").strip()
+        self._audience = ""
+        if who and address:
+            never = "" if address.lower() == "sir" else " Never sir."
+            self._audience = f"Speak to {who}. Address as {address}.{never}\n\n"
+        try:
+            cap = str(snap.get("cap") or "")
+            if cap == "search":
+                return self._search(snap)
+            if cap == "vault-write":
+                return self._remember(snap)
+            if cap == "distill":
+                return self._distill(snap)
+            if cap == "home":
+                return self._home(snap)
+            if cap == "imagine":
+                return self._imagine(snap)
+            if cap == "docs":
+                return self._docs(snap)
+            if cap == "shell":
+                return self._shell(snap)
+            if cap == "forge":
+                return self._forge(snap)
+            if cap == "see":
+                return self._see(snap)
+            if cap == "diagnose":
+                return self._diagnose(snap)
+            raise RuntimeError(f"unsupported cap {cap!r}")
+        finally:
+            self._audience = ""
+
+    def _see(self, snap: dict) -> tuple[str, str]:
+        addr = str(snap.get("address") or "sir").strip() or "sir"
+        speak = (
+            f"I don't send pictures off this machine, {addr}. "
+            "I haven't got eyes that stay in the house yet."
+        )
+        return speak, "refused-cloud"
+
+    def _diagnose(self, snap: dict) -> tuple[str, str]:
+        from memory.diagnose import inspect
+
+        return inspect(self.home, str(snap.get("prompt") or ""))
 
     def _forge(self, snap: dict) -> tuple[str, str]:
         from memory.forge import fetch_brief, load_secrets
@@ -355,8 +410,8 @@ class HostWorker:
 
     def _shell(self, snap: dict) -> tuple[str, str]:
         from memory.shell import (
+            SHELL_DENY,
             SHELL_SYSTEM,
-            SHELL_TOOLS,
             looks_like_tests,
             refuse_reason,
             run_unittests,
@@ -375,10 +430,12 @@ class HostWorker:
         raw = self._ask(
             asked,
             system=SHELL_SYSTEM,
-            web=False,
+            web=True,
             max_turns=12,
             timeout=180,
-            tools=SHELL_TOOLS,
+            disallowed=SHELL_DENY,
+            subagents=True,
+            effort="high",
             cwd=root,
         )
         return speak_from_grok(raw)
@@ -699,14 +756,41 @@ class HostWorker:
         job_id = str(snap.get("id") or "")
         if not job_id or not self.board.claim(job_id, self.worker_id):
             return False
-        log(f"[workshop] {job_id} {snap.get('cap')}")
+        cap = str(snap.get("cap") or "job")
+        log(f"[workshop] {job_id} {cap}")
+        started = {
+            "search": "Looking that up.",
+            "vault-write": "Filing that.",
+            "home": "Seeing to the house.",
+            "imagine": "Drawing that.",
+            "docs": "Writing that up.",
+            "shell": "Working on the checkout.",
+            "forge": "Checking the log.",
+            "see": "Looking.",
+            "diagnose": "Looking at what went wrong.",
+            "distill": "Filing notes.",
+        }.get(cap, "On it.")
+        self.board.progress(job_id, started)
+        self._job_id = job_id
         try:
             speak, result = self.handle(self.board.snapshot(job_id))
-            self.board.finish(job_id, speak=speak, result=result)
-            log(f"[workshop] {job_id} done {result!r}")
+        except InterruptedError:
+            log(f"[workshop] {job_id} cancelled")
+            return True
         except Exception as exc:
+            if self.board.latest_status(job_id) == "cancelled":
+                log(f"[workshop] {job_id} cancelled")
+                return True
             log(f"[workshop] {job_id} error {exc}")
             self.board.fail(job_id, str(exc))
+            return True
+        finally:
+            self._job_id = ""
+        if self.board.latest_status(job_id) == "cancelled":
+            log(f"[workshop] {job_id} cancelled")
+            return True
+        self.board.finish(job_id, speak=speak, result=result)
+        log(f"[workshop] {job_id} done {result!r}")
         return True
 
     def run(self, *, once: bool = False, idle_s: float = 0.25) -> None:
@@ -840,7 +924,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Jarvis host workshop")
     p.add_argument("--data-dir", default=None)
     p.add_argument("--grok", default=None)
-    p.add_argument("--model", default="grok-4.5")
+    p.add_argument("--model", default="grok-4.6")
     p.add_argument("--worker-id", default=None)
     p.add_argument("--parent-pid", type=int, default=0)
     p.add_argument("--once", action="store_true")

@@ -49,7 +49,16 @@ from memory.ears import (  # noqa: E402
 from memory.home import JarvisHome  # noqa: E402
 from memory.imagine import library_label, rescue_session_media, speak_ready  # noqa: E402
 from memory.batch import is_ping, latest_wins  # noqa: E402
+from memory.ha import is_no, is_yes, pending_confirm  # noqa: E402
 from memory.intent import HOME, HUSH, classify, maybe_enqueue, resolve_intents  # noqa: E402
+from memory.replace import (  # noqa: E402
+    ask as ask_replace,
+    contended,
+    keep_line,
+    pending as pending_replace,
+    clear as clear_replace,
+)
+from memory.route import intent_for_cap  # noqa: E402
 from memory.route import ROUTE_SYSTEM, ROUTE_TIMEOUT_S, roster_card  # noqa: E402
 from memory.jobs import JobBoard  # noqa: E402
 from memory.prompt import SPEECH_RULES, build_system_prompt, load_boot_notes  # noqa: E402
@@ -233,7 +242,7 @@ class CliBrain:
             "-m",
             self.model,
             "--effort",
-            "low",
+            "medium",
             "--cwd",
             str(HERE),
             "--always-approve",
@@ -331,7 +340,7 @@ class AgentBrain:
             "-m",
             self.model,
             "--effort",
-            "low",
+            "medium",
             "--no-leader",
             "stdio",
         ]
@@ -654,14 +663,22 @@ def _phone_say(mouth: Mouth, line: str) -> bytes:
         mouth._capture = None
 
 
-def handle_phone_job(job, mouth: Mouth, utter) -> None:
+def handle_phone_job(job, desk: Desk) -> None:
+    mouth = desk.mouth
+    from memory.people import resolve_who, with_vocative
+
+    who = resolve_who(getattr(job, "who", "") or "", desk.roster)
+    if who is not None:
+        desk.set_speaker(who)
     prev = mouth.hear
     mouth.hear = False
+    miss = with_vocative("I didn't catch that, sir.", desk.speaker)
+    fail = with_vocative("The phone link failed, sir.", desk.speaker)
     try:
         hud_state("listening")
         pcm = decode_upload(job.data, job.content_type)
         if getattr(pcm, "size", 0) < 1600:
-            mp3 = _phone_say(mouth, "I didn't catch that, sir.")
+            mp3 = _phone_say(mouth, miss)
             job.finish(text="", mp3=mp3)
             hud_state("idle")
             return
@@ -670,12 +687,12 @@ def handle_phone_job(job, mouth: Mouth, utter) -> None:
         stt_ms = round((time.perf_counter() - t0) * 1000)
         log(f"[phone] {text!r}  (stt {stt_ms}ms {note})")
         if not text:
-            mp3 = _phone_say(mouth, "I didn't catch that, sir.")
+            mp3 = _phone_say(mouth, miss)
             job.finish(text="", mp3=mp3)
             hud_state("idle")
             return
         mouth._capture = []
-        utter(text, stt_ms=stt_ms)
+        desk.utter(text, stt_ms=stt_ms)
         mp3 = b"".join(mouth._capture or [])
         mouth._capture = None
         job.finish(text=text, mp3=mp3)
@@ -684,13 +701,40 @@ def handle_phone_job(job, mouth: Mouth, utter) -> None:
         log(f"[phone] {exc}")
         mouth._capture = None
         try:
-            mp3 = _phone_say(mouth, "The phone link failed, sir.")
+            mp3 = _phone_say(mouth, fail)
             if mp3:
                 job.finish(text="", mp3=mp3)
             else:
                 job.finish(error=str(exc)[:400])
         except Exception:
             job.finish(error=str(exc)[:400])
+        hud_state("idle")
+    finally:
+        mouth.hear = prev
+
+
+def handle_glance_job(job, desk: Desk) -> None:
+    mouth = desk.mouth
+    from memory.people import resolve_who, with_vocative
+
+    who = resolve_who(getattr(job, "who", "") or "", desk.roster)
+    if who is not None:
+        desk.set_speaker(who)
+    prev = mouth.hear
+    mouth.hear = False
+    line = with_vocative(
+        "I don't send pictures off this machine, sir. "
+        "I haven't got eyes that stay in the house yet.",
+        desk.speaker,
+    )
+    try:
+        hud_state("speaking", line)
+        mp3 = _phone_say(mouth, line)
+        job.finish(text=line, mp3=mp3)
+        hud_state("idle")
+    except Exception as exc:
+        log(f"[eyes] {exc}")
+        job.finish(error=str(exc)[:400])
         hud_state("idle")
     finally:
         mouth.hear = prev
@@ -1062,7 +1106,28 @@ def one_turn(
     first_audio = None
     spoken = []
     buf = ""
+    raw_all = ""
+    muted = False
     cut = False
+    from memory.dispatch import split_public
+
+    def _say(sent: str) -> None:
+        nonlocal first_sent, first_audio
+        sent = " ".join((sent or "").split())
+        if not sent:
+            return
+        if first_sent is None:
+            first_sent = time.perf_counter()
+            log(f"  [{brain.model}] first sentence {int((first_sent-t0)*1000)}ms: {sent}")
+            hud_state("speaking", sent)
+            mouth.say(sent)
+            first_audio = mouth.last_start or time.perf_counter()
+        else:
+            log(f"  [{brain.model}] {sent}")
+            hud_state("speaking", sent)
+            mouth.say(sent)
+        spoken.append(sent)
+
     for chunk in brain.ask(text):
         if stop is not None and stop():
             log("[desk] chat superseded")
@@ -1072,25 +1137,22 @@ def one_turn(
         if ttfb is None:
             ttfb = now
             log(f"  [{brain.model}] first token {int((now-t0)*1000)}ms {chunk!r}")
+        raw_all += chunk
+        if muted:
+            continue
         buf += chunk
+        public, priv = split_public(buf)
+        if priv:
+            buf = public
+            muted = True
+            log(f"  [{brain.model}] hands (muted)")
         while True:
             m = SENTENCE_END.search(buf)
             if not m:
                 break
             sent, buf = buf[: m.end()].strip(), buf[m.end() :]
-            if not sent:
-                continue
-            if first_sent is None:
-                first_sent = time.perf_counter()
-                log(f"  [{brain.model}] first sentence {int((first_sent-t0)*1000)}ms: {sent}")
-                hud_state("speaking", sent)
-                mouth.say(sent)
-                first_audio = mouth.last_start or time.perf_counter()
-            else:
-                log(f"  [{brain.model}] {sent}")
-                hud_state("speaking", sent)
-                mouth.say(sent)
-            spoken.append(sent)
+            if sent:
+                _say(sent)
             if stop is not None and stop():
                 log("[desk] chat superseded")
                 cut = True
@@ -1100,17 +1162,7 @@ def one_turn(
             break
     tail = buf.strip()
     if tail and not cut and not (stop is not None and stop()):
-        if first_sent is None:
-            first_sent = time.perf_counter()
-            log(f"  [{brain.model}] first sentence {int((first_sent-t0)*1000)}ms: {tail}")
-            hud_state("speaking", tail)
-            mouth.say(tail)
-            first_audio = mouth.last_start or time.perf_counter()
-        else:
-            log(f"  [{brain.model}] {tail}")
-            hud_state("speaking", tail)
-            mouth.say(tail)
-        spoken.append(tail)
+        _say(tail)
     hud_state("idle")
     sid = getattr(brain, "session_id", "") or ""
     if sid:
@@ -1139,7 +1191,8 @@ def one_turn(
         "first_sentence_ms": round((first_sent - t0) * 1000) if first_sent else None,
         "first_audio_ms": round((first_audio - t0) * 1000) if first_audio else None,
         "total_ms": round(total * 1000),
-        "reply": " ".join(spoken),
+        "reply": raw_all or " ".join(s for s in spoken if s),
+        "spoken": " ".join(s for s in spoken if s),
     }
     extra = f" stt={stt_ms}ms" if stt_ms is not None else ""
     log(
@@ -1148,9 +1201,11 @@ def one_turn(
         f"audio={row['first_audio_ms']}ms  total={row['total_ms']}ms"
     )
     if session is not None:
+        from memory.dispatch import strip_hands as _strip_hands
+
         session.record(
             log_text if log_text is not None else text,
-            row["reply"],
+            row.get("spoken") or _strip_hands(row["reply"]),
             stt_ms=row["stt_ms"],
             ttfb_ms=row["ttfb_ms"],
             first_sentence_ms=row["first_sentence_ms"],
@@ -1187,6 +1242,39 @@ class Desk:
         self.gen = 0
         self._preempt = threading.Event()
         self._state = threading.Lock()
+        from memory.people import load_roster, primary
+
+        self.roster = load_roster(board.home)
+        self.speaker = primary(self.roster)
+
+    def set_speaker(self, person) -> None:
+        if person is None:
+            return
+        self.speaker = person
+        log(f"[who] {person.name} address={person.address}")
+
+    def _vocative_line(self, line: str) -> str:
+        from memory.people import with_vocative
+
+        return with_vocative(line, self.speaker)
+
+    def _greet_speaker(self, person, text: str, stt_ms: int | None = None) -> dict:
+        self.set_speaker(person)
+        from memory.people import vocative
+
+        v = vocative(person)
+        if v.lower() == "sir":
+            line = "Yes, sir."
+        else:
+            line = f"Hello {v}."
+        hud_state("speaking", line)
+        self.mouth.say(line)
+        hud_state("idle")
+        if self.session is not None:
+            self.session.record(
+                text, line, stt_ms=stt_ms, brain="who", model=person.slug
+            )
+        return {"reply": line, "brain": "who", "model": person.slug, "stt_ms": stt_ms}
 
     def _claim_speak(self, job_id: str) -> bool:
         """First caller may speak this job. Wait vs drain must not both talk."""
@@ -1223,6 +1311,7 @@ class Desk:
             for job_id in list(self.pending):
                 self.announced.add(job_id)
         log("[desk] hush — older jobs stay silent")
+        clear_replace(self.board.home)
         if self.session is not None:
             self.session.record(
                 text, "", stt_ms=stt_ms, brain="jobs", model="hush"
@@ -1242,7 +1331,7 @@ class Desk:
                 out = run_prompt(
                     asked,
                     grok=GROK,
-                    model=getattr(self.brain, "model", None) or "grok-4.5",
+                    model=getattr(self.brain, "model", None) or "grok-4.6",
                     system=ROUTE_SYSTEM,
                     web=False,
                     max_turns=1,
@@ -1267,15 +1356,13 @@ class Desk:
         stt_ms = next((s for _, s in items if s is not None), None)
         text = texts[-1]
         self._preempt.clear()
-        model = getattr(self.brain, "model", None) or "grok-4.5"
+        model = getattr(self.brain, "model", None) or "grok-4.6"
         t_route = time.perf_counter()
         resolved = resolve_intents(
             text,
             caps=self.registry.caps(),
             roster=roster_card(self.board.home),
-            grok=GROK,
-            model=model,
-            run=self._route_run,
+            home=self.board.home,
         )
         log(
             f"[route] {int((time.perf_counter() - t_route) * 1000)}ms "
@@ -1283,14 +1370,13 @@ class Desk:
         )
         if any(getattr(i, "kind", "") == HUSH.kind for i in resolved):
             return self.hush(text, stt_ms=stt_ms)
+        from memory.people import match_intro
+
+        intro = match_intro(text, self.roster)
+        if intro is not None:
+            return self._greet_speaker(intro, text, stt_ms=stt_ms)
         if self.registry.has_cap("home"):
-            from memory.ha import (
-                is_house_followup,
-                is_no,
-                is_yes,
-                pending_clarify,
-                pending_confirm,
-            )
+            from memory.ha import is_house_followup, pending_clarify
 
             if pending_confirm(self.board.home):
                 resolved = [
@@ -1303,17 +1389,32 @@ class Desk:
         if self._preempted():
             log("[desk] superseded before acting")
             return {"reply": ""}
+        waiting = pending_replace(self.board.home)
+        if (
+            waiting
+            and not pending_confirm(self.board.home)
+            and (is_yes(text) or is_no(text))
+        ):
+            return self._replace_answer(text, waiting, stt_ms=stt_ms)
         kinds = [getattr(i, "kind", "") for i in resolved]
         if kinds and all(k == "status" for k in kinds):
             return self.report_work(text, stt_ms=stt_ms)
         if self.pending and is_ping(text) and not any(getattr(i, "cap", None) for i in resolved):
             return self.report_work(text, stt_ms=stt_ms)
+        jobs_now = [i for i in resolved if getattr(i, "cap", None)]
+        if jobs_now:
+            busy = contended(self.board, self.registry, jobs_now[0].cap)
+            if busy:
+                return self._ask_replace(text, jobs_now[0], busy, stt_ms=stt_ms)
         self.gen += 1
         my_gen = self.gen
         spoken: list[str] = []
         extra: dict = {"gen": my_gen}
         if self.session is not None:
             extra["session"] = self.session.session_id
+        if self.speaker is not None:
+            extra["who"] = self.speaker.name
+            extra["address"] = self.speaker.address
         jobs = [(text, i) for i in resolved if getattr(i, "cap", None)]
         chat = [
             i
@@ -1331,9 +1432,10 @@ class Desk:
             from memory.working import desk_prefix
 
             prompt = text
-            pre = desk_prefix(self.board.home)
+            pre = desk_prefix(self.board.home, person=self.speaker)
             if pre:
-                prompt = pre + "\n\nMatt: " + prompt
+                who = getattr(self.speaker, "name", None) or "They"
+                prompt = pre + f"\n\n{who}: " + prompt
             row = one_turn(
                 self.brain,
                 self.mouth,
@@ -1343,9 +1445,87 @@ class Desk:
                 log_text=text,
                 stop=self._preempted,
             )
-            spoken.append(str(row.get("reply") or ""))
+            raw_reply = str(row.get("reply") or "")
+            from memory.dispatch import intents_from_mouth, strip_hands
+
+            heard = str(row.get("spoken") or "").strip() or strip_hands(raw_reply)
+            spoken.append(heard)
+            for task, intent in intents_from_mouth(raw_reply, text):
+                log(f"[desk] mouth asked hands cap={intent.cap} {task[:80]!r}")
+                spoken.extend(
+                    self._start_job(
+                        task,
+                        stt_ms,
+                        extra,
+                        intent=intent,
+                        speak_ack=False,
+                    )
+                )
         hud_state("idle")
         return {"reply": " ".join(s for s in spoken if s), "brain": "batch"}
+
+    def _ask_replace(self, text: str, intent, busy: list[dict], stt_ms: int | None):
+        for snap in busy:
+            jid = str(snap.get("id") or "")
+            if jid:
+                self.announced.add(jid)
+        line = ask_replace(
+            self.board.home,
+            current=busy,
+            next_prompt=text,
+            next_cap=str(intent.cap or ""),
+        )
+        log(f"[jobs] confirm replace {line!r}")
+        hud_state("speaking", line)
+        self.mouth.say(line)
+        hud_state("idle")
+        if self.session is not None:
+            self.session.record(
+                text, line, stt_ms=stt_ms, brain="jobs", model="replace"
+            )
+        return {"reply": line, "brain": "jobs", "model": "replace", "stt_ms": stt_ms}
+
+    def _replace_answer(self, text: str, waiting: dict, stt_ms: int | None):
+        current = str(waiting.get("current_label") or "that")
+        if is_no(text):
+            for jid in waiting.get("cancel_ids") or []:
+                self.announced.discard(str(jid))
+            clear_replace(self.board.home)
+            line = keep_line(current)
+            hud_state("speaking", line)
+            self.mouth.say(line)
+            hud_state("idle")
+            if self.session is not None:
+                self.session.record(
+                    text, line, stt_ms=stt_ms, brain="jobs", model="replace"
+                )
+            spoken = self.drain()
+            if spoken:
+                line = line + " " + spoken[-1]
+            return {"reply": line, "brain": "jobs", "model": "replace", "stt_ms": stt_ms}
+        self.gen += 1
+        extra: dict = {"gen": self.gen}
+        if self.session is not None:
+            extra["session"] = self.session.session_id
+        if self.speaker is not None:
+            extra["who"] = self.speaker.name
+            extra["address"] = self.speaker.address
+        for jid in waiting.get("cancel_ids") or []:
+            jid = str(jid)
+            self.board.cancel(jid, reason="replaced")
+            self.announced.add(jid)
+            self.pending.discard(jid)
+        clear_replace(self.board.home)
+        nxt = str(waiting.get("next_prompt") or text)
+        cap = str(waiting.get("next_cap") or "")
+        intent = intent_for_cap(cap, nxt)
+        spoken = self._start_job(nxt, stt_ms, extra, intent=intent)
+        return {
+            "reply": " ".join(s for s in spoken if s),
+            "brain": "jobs",
+            "model": "replace",
+            "stt_ms": stt_ms,
+        }
 
     def _start_job(
         self,
@@ -1353,6 +1533,7 @@ class Desk:
         stt_ms: int | None,
         extra: dict,
         intent=None,
+        speak_ack: bool = True,
     ) -> list[str]:
         hit = maybe_enqueue(
             text,
@@ -1361,11 +1542,11 @@ class Desk:
             extra=extra or None,
             intent=intent,
             grok=GROK,
-            model=getattr(self.brain, "model", None) or "grok-4.5",
+            model=getattr(self.brain, "model", None) or "grok-4.6",
         )
         if hit is None:
             missed = intent if intent is not None else classify(text)
-            line = "The workbench is not connected yet, sir."
+            line = self._vocative_line("I haven't got hands for that yet, sir.")
             log(f"[jobs] {getattr(missed, 'cap', None)} missed — workshop offline or cap down")
             hud_state("speaking", line)
             self.mouth.say(line)
@@ -1383,25 +1564,27 @@ class Desk:
         log(f"[jobs] {job_id} cap={intent.cap} gen={extra.get('gen')} {text!r}")
         if self._preempted():
             return []
-        hud_state("speaking", intent.ack)
-        self.mouth.say(intent.ack)
-        if self.session is not None:
-            self.session.record(
-                text, intent.ack, stt_ms=stt_ms, brain="jobs", model=intent.cap
-            )
+        ack = self._vocative_line(intent.ack) if speak_ack else ""
+        if ack:
+            hud_state("speaking", ack)
+            self.mouth.say(ack)
+            if self.session is not None:
+                self.session.record(
+                    text, ack, stt_ms=stt_ms, brain="jobs", model=intent.cap
+                )
         if self._preempted():
-            return [intent.ack]
+            return [ack] if ack else []
         if intent.wait_s > 0:
             snap = self.board.wait(
                 job_id, timeout=intent.wait_s, abort=self._preempted
             )
             if self._preempted():
-                return [intent.ack]
+                return [ack]
             if snap and snap.get("event") in ("done", "error"):
                 if not self._claim_speak(job_id):
-                    return [intent.ack]
+                    return [ack]
                 if self._stale(snap):
-                    return [intent.ack]
+                    return [ack]
                 line = self._speak_line(snap)
                 if line:
                     self.last_speak = line
@@ -1414,45 +1597,42 @@ class Desk:
                             brain="jobs",
                             model=intent.cap,
                         )
-                    return [intent.ack, line]
+                    return [ack, line]
             log(f"[jobs] {job_id} still running after {intent.wait_s:.0f}s")
-        return [intent.ack]
+        return [ack]
 
     def report_work(self, text: str, stt_ms: int | None = None) -> dict:
-        """Answer progress from the job board — never ask the desk Grok."""
+        """Finished jobs speak immediately. Otherwise the mouth answers from the brief."""
         spoken = self.drain()
         if spoken:
             line = spoken[-1]
-        elif self.pending:
-            line = PROGRESS_LINE
-            hud_state("speaking", line)
-            self.mouth.say(line)
-            hud_state("idle")
-        else:
-            line = self.board.status_line(asked=text, pending_ids=self.pending)
-            if (
-                line.startswith("Nothing")
-                and self.last_speak
-                and not re.search(
-                    r"\b(?:animation|pdf|image|picture|video|drawing|document)\b",
-                    text or "",
-                    re.I,
+            if self.session is not None:
+                self.session.record(
+                    text, line, stt_ms=stt_ms, brain="jobs", model="status"
                 )
-            ):
-                line = self.last_speak
-            hud_state("speaking", line)
-            self.mouth.say(line)
-            hud_state("idle")
-        if self.session is not None:
-            self.session.record(
-                text, line, stt_ms=stt_ms, brain="jobs", model="status"
-            )
-        return {
-            "brain": "jobs",
-            "model": "status",
-            "stt_ms": stt_ms,
-            "reply": line,
-        }
+            return {
+                "brain": "jobs",
+                "model": "status",
+                "stt_ms": stt_ms,
+                "reply": line,
+            }
+        from memory.working import desk_prefix
+
+        prompt = text
+        pre = desk_prefix(self.board.home, person=self.speaker)
+        if pre:
+            who = getattr(self.speaker, "name", None) or "They"
+            prompt = pre + f"\n\n{who}: " + prompt
+        row = one_turn(
+            self.brain,
+            self.mouth,
+            prompt,
+            stt_ms=stt_ms,
+            session=self.session,
+            log_text=text,
+            stop=self._preempted,
+        )
+        return row
 
     def drain(self) -> list[str]:
         to_say: list[tuple[str, str, dict]] = []
@@ -1462,14 +1642,6 @@ class Desk:
                 snap = self.board.snapshot(job_id)
                 ev = snap.get("event")
                 if ev not in ("done", "error"):
-                    if (
-                        ev in ("claimed", "enqueued")
-                        and job_id not in self.progressed
-                        and job_id not in self.announced
-                        and self._job_age_s(snap) >= PROGRESS_AFTER_S
-                    ):
-                        self.progressed.add(job_id)
-                        to_say.append(("progress", job_id, snap))
                     continue
                 if job_id in self.announced:
                     self.pending.discard(job_id)
@@ -1480,13 +1652,6 @@ class Desk:
                 continue
             if self._preempted() or self._stale(snap):
                 log(f"[jobs] {job_id} skip speak stale/preempt gen={snap.get('gen')}")
-                continue
-            if kind == "progress":
-                log(f"[jobs] {job_id} still working")
-                hud_state("speaking", PROGRESS_LINE)
-                self.mouth.say(PROGRESS_LINE)
-                hud_state("idle")
-                spoken.append(PROGRESS_LINE)
                 continue
             line = self._speak_line(snap)
             if not line:
@@ -1533,8 +1698,10 @@ class Desk:
     @staticmethod
     def _speak_line(snap: dict) -> str:
         if snap.get("event") == "error":
-            return "The workshop could not finish that, sir."
-        return str(snap.get("speak") or "").strip()
+            return "I couldn't finish that, sir."
+        from memory.dispatch import audible
+
+        return audible(str(snap.get("speak") or ""))
 
     @staticmethod
     def _job_age_s(snap: dict) -> float:
@@ -1761,7 +1928,7 @@ def _run_talk_loop(desk: Desk, stt: str) -> None:
             quiet = any(t == "__quiet__" for t, _ in batch)
             rest = [(t, s) for t, s in batch if t not in ("__quit__", "__quiet__")]
             if quiet and not rest:
-                desk.mouth.say("I didn't catch that, sir.")
+                desk.mouth.say(desk._vocative_line("I didn't catch that, sir."))
                 hud_state("idle")
                 continue
             if rest:
@@ -1782,14 +1949,17 @@ def _run_talk_loop(desk: Desk, stt: str) -> None:
             job = None
         if job:
             desk.preempt()
-            handle_phone_job(job, desk.mouth, desk.utter)
+            if getattr(job, "kind", "") == "glance":
+                handle_glance_job(job, desk)
+            else:
+                handle_phone_job(job, desk)
             continue
         batch = latest_wins(_take_batch(inbox, 0.05))
         if not batch:
             continue
         rest = [(t, s) for t, s in batch if t != "__quiet__"]
         if any(t == "__quiet__" for t, _ in batch) and not rest:
-            desk.mouth.say("I didn't catch that, sir.")
+            desk.mouth.say(desk._vocative_line("I didn't catch that, sir."))
             hud_state("idle")
             continue
         if rest:
@@ -1987,29 +2157,8 @@ def main() -> None:
         t0 = time.perf_counter()
         brain.start()
         log(f"[brain] up in {int((time.perf_counter()-t0)*1000)}ms")
-        if args.brain == "agent" and not args.bench:
-            try:
-                t_r = time.perf_counter()
-                router = AgentBrain(
-                    args.model,
-                    system_prompt=ROUTE_SYSTEM,
-                    log_path=HERE / "router.stderr.log",
-                    client="jarvis-router",
-                )
-                router.start()
-                log(f"[route] up in {int((time.perf_counter() - t_r) * 1000)}ms")
-            except Exception as exc:
-                log(f"[route] warm agent failed ({exc}) — cold grok -p")
-                router = None
         ping = threading.Thread(target=brain.warmup, daemon=True)
         ping.start()
-        rping = None
-        if router is not None:
-            rping = threading.Thread(
-                target=lambda: router.warmup("Caps: search, home.\nUtterance: hello"),
-                daemon=True,
-            )
-            rping.start()
         if args.stt != "none":
             warm_stt(args.stt)
         if args.tts != "none":
@@ -2019,10 +2168,6 @@ def main() -> None:
         ping.join(timeout=90)
         if ping.is_alive():
             log("[brain] warmup still running — first hello may be slower")
-        if rping is not None:
-            rping.join(timeout=30)
-            if rping.is_alive():
-                log("[route] warmup still running — first route may be slower")
         if args.bench:
             run_bench(brain, mouth, args.rounds)
         else:

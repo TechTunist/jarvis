@@ -32,16 +32,23 @@ ANIMATE = Intent("imagine", "imagine", "I'll animate that, sir.", 0.0)
 DOCS = Intent("docs", "docs", "I'll write that up, sir.", 0.0)
 STATUS = Intent("status", None, "", 0.0)
 HUSH = Intent("hush", None, "", 0.0)
-CODE = Intent("code", "shell", "I'll send that to the workshop, sir.", 0.0)
+CODE = Intent("code", "shell", "I'll take that, sir.", 0.0)
 FORGE = Intent("forge", "forge", "I'll check the log, sir.", 0.0)
+SEE = Intent("see", "see", "I'll have a look, sir.", 40.0)
+DIAGNOSE = Intent(
+    "diagnose",
+    "diagnose",
+    "Something's off. I'm looking into it, sir.",
+    0.0,
+)
 
 _ACKS = {
     "search": (
+        "I'll have a look at that now, sir.",
         "I'll look into that, sir.",
         "One moment, sir.",
         "Checking now, sir.",
         "On it, sir.",
-        "Leave that with me, sir.",
     ),
     "remember": (
         "I'll file that, sir.",
@@ -65,8 +72,9 @@ _ACKS = {
         "I'll set that moving, sir.",
     ),
     "code": (
-        "I'll send that to the workshop, sir.",
-        "Workshop can take that, sir.",
+        "I'll have a look at that now, sir.",
+        "I'll take that, sir.",
+        "On it, sir.",
     ),
     "docs": (
         "I'll write that up, sir.",
@@ -77,6 +85,16 @@ _ACKS = {
         "I'll check the log, sir.",
         "Looking at your training, sir.",
         "One moment, sir.",
+    ),
+    "see": (
+        "I'll have a look, sir.",
+        "Looking now, sir.",
+        "One moment, sir.",
+    ),
+    "diagnose": (
+        "Something's off. I'm looking into it, sir.",
+        "That didn't sit right. Checking it, sir.",
+        "I'm running a look at that now, sir.",
     ),
 }
 _last_ack: dict[str, str] = {}
@@ -202,7 +220,9 @@ _HOME = re.compile(
     r"\b(?:" + _HOME_NOUN + r"|" + _HOME_ROOM + r")\b.{0,30}\b"
     r"(?:dim(?:mer)?|brighten|brighter|darker)\b"
     r"|"
-    r"\b(?:what(?:'s|s| is| are)?|which|list)\b.{0,30}\b(?:lights?|lamps?|devices?)\b"
+    r"\b(?:kill|cut)\s+(?:the\s+)?(?:glow|glare)\b"
+    r"|"
+    r"\bgloomy\b"
     r")",
     re.I,
 )
@@ -254,6 +274,27 @@ _CODE = re.compile(
     r"\b(?:run\s+(?:the\s+)?tests?|pytest|git\s+commit|pull\s+request)\b"
     r"|\b(?:this|the|our)\s+repo\b"
     r"|\b(?:ableton|fusion(?:\s*360)?)\b"
+    r"|\b(?:go\s+)?(?:implement|patch)\b"
+    r"|\bfix\s+(?:the\s+)?(?:bug|tests?|code|repo)\b"
+    r"|\bdirector(?:y|ies)\b"
+    r"|\bfolders?\b"
+    r"|\bcode\s*base\b"
+    r"|\blines of code\b"
+    r"|\b(?:processor|cpu|ram|hardware)\b"
+    r"|\b(?:laptop|machine|host)\s+(?:spec|hardware|cpu|processor)\b"
+    r"|\brunning on\b"
+    r"|\blist(?:ing)?\s+(?:the\s+)?files\b"
+    r"|\bwhat(?:'s| is) in (?:the )?(?:dir|folder|repo|code|checkout|directory)\b"
+    r"|\bdisk space\b"
+    r"|\bhostname\b"
+    r")",
+    re.I,
+)
+
+_DOCS = re.compile(
+    r"(?:"
+    r"\b(?:pdf|parts\s+list|build\s+instructions?)\b"
+    r"|\bwrite\s+(?:me\s+|a\s+)?(?:guide|spec|document)\b"
     r")",
     re.I,
 )
@@ -270,6 +311,22 @@ _FORGE = re.compile(
     re.I,
 )
 
+_SEE = re.compile(
+    r"(?:"
+    r"\bhave a look\b"
+    r"|\btake a look\b"
+    r"|\blook at (?:this|that|me)\b"
+    r"|\bwhat do you see\b"
+    r"|\bwhat am i (?:holding|doing|showing|wearing)\b"
+    r"|\bcan you see (?:this|that|what)\b"
+    r"|\buse (?:your |the )?eyes\b"
+    r"|\buse (?:the |your )?camera\b"
+    r"|\blook at (?:the |my )?screen\b"
+    r"|\bwhat(?:'s| is) on (?:the |my )?screen\b"
+    r")",
+    re.I,
+)
+
 _SEARCH = re.compile(
     r"(?:"
     r"\bweather\b"
@@ -279,14 +336,30 @@ _SEARCH = re.compile(
     r"|\bthe\s+news\b"
     r"|\bstock\s+price\b"
     r"|\bshare\s+price\b"
+    r"|\b(?:coin|crypto)\s+price\b"
+    r"|\bprice of\b"
+    r"|\b(?:bitcoin|btc|ethereum|eth)\b"
+    r"|\bexchange rate\b"
     r"|\bwhat(?:'s| is) the score\b"
     r")",
     re.I,
 )
 
 
+_HOME_QUERY = re.compile(
+    r"\b(?:what(?:'s|s| is| are)?|which|how many|list|do we have)\b"
+    r".{0,40}\b(?:lights?|lamps?|devices?|rooms?)\b",
+    re.I,
+)
+_HOME_ACT = re.compile(
+    r"\b(?:turn|switch|dim|unlock|lock|open|close|shut|brighten|darken|"
+    r"kill|cut)\b",
+    re.I,
+)
+
+
 def classify(text: str) -> Intent:
-    """High-precision regex. Prefer chat over a wrong workshop job."""
+    """High-precision regex. Prefer chat over a wrong hands job."""
     raw = " ".join((text or "").split())
     if len(raw) < 2:
         return CHAT
@@ -294,12 +367,16 @@ def classify(text: str) -> Intent:
         return HUSH
     if _REMEMBER.search(raw) or _FORGET.search(raw) or _PLACE_UPDATE.search(raw):
         return REMEMBER
+    if _HOME_QUERY.search(raw) and not _HOME_ACT.search(raw):
+        return CHAT
     if _HOME.search(raw):
         return HOME
     if _STATUS.search(raw):
         return STATUS
     if _IMAGINE.search(raw):
         return ANIMATE if wants_animation(raw) else IMAGINE
+    if _SEE.search(raw):
+        return SEE
     if _CODE.search(raw):
         return CODE
     if _FORGE.search(raw):
@@ -317,9 +394,16 @@ def resolve_intent(
     grok: Path | None = None,
     model: str = "grok-4.5",
     run: Callable[..., str] | None = None,
+    home=None,
 ) -> Intent:
     return resolve_intents(
-        text, caps=caps, roster=roster, grok=grok, model=model, run=run
+        text,
+        caps=caps,
+        roster=roster,
+        grok=grok,
+        model=model,
+        run=run,
+        home=home,
     )[0]
 
 
@@ -331,27 +415,56 @@ def resolve_intents(
     grok: Path | None = None,
     model: str = "grok-4.5",
     run: Callable[..., str] | None = None,
+    home=None,
 ) -> list[Intent]:
-    """House/search/memory stay regex-fast. Make-requests go to Grok (one or more caps)."""
-    from memory.route import obvious_chat, semantic_route
+    """Regex / local only. Fail closed to chat. Unsure is conversation."""
+    from memory.route import obvious_chat
 
-    fast = classify(text)
+    del grok, model, run
+    raw = " ".join((text or "").split())
+    fast = classify(raw)
     if fast.kind in {"status", "hush"}:
         return [fast]
-    if obvious_chat(text) and not fast.cap:
+    if obvious_chat(raw) and not fast.cap:
         return [CHAT]
-    if fast.cap in {"home", "search", "vault-write"}:
+    if fast.cap == "vault-write":
         return [fast]
-    routed = semantic_route(
-        text, caps=caps, roster=roster, grok=grok, model=model, run=run
-    )
-    if not isinstance(routed, list):
-        routed = [routed]
-    work = [i for i in routed if i.cap or i.kind in {"status", "hush"}]
-    if work:
-        return work
-    if fast.cap:
+    if fast.cap == "home":
         return [fast]
+    if fast.kind == "diagnose":
+        return [fast]
+    found: list[Intent] = []
+    if _IMAGINE.search(raw):
+        found.append(ANIMATE if wants_animation(raw) else IMAGINE)
+    if _SEE.search(raw):
+        found.append(SEE)
+    if _DOCS.search(raw):
+        found.append(DOCS)
+    if _CODE.search(raw):
+        found.append(CODE)
+    if _FORGE.search(raw):
+        found.append(FORGE)
+    if _SEARCH.search(raw):
+        from memory.working import looks_like_weather, weather_fresh
+
+        if (
+            looks_like_weather(raw)
+            and home is not None
+            and weather_fresh(home)
+            and not re.search(
+                r"\b(?:look(?:ing)?\s+up|search\s+for|google|headlines|the\s+news)\b",
+                raw,
+                re.I,
+            )
+        ):
+            pass
+        else:
+            found.append(SEARCH)
+    live = set(caps) if caps else None
+    if live is not None:
+        found = [i for i in found if not i.cap or i.cap in live]
+    if found:
+        return found
     return [CHAT]
 
 
@@ -422,6 +535,7 @@ def maybe_enqueue(
             grok=grok,
             model=model,
             run=run,
+            home=board.home,
         )
     if not intent.cap or not registry.has_cap(intent.cap):
         return None
@@ -438,21 +552,32 @@ def maybe_enqueue(
     if intent.cap == "imagine" and "media" not in payload:
         payload["media"] = "video" if wants_animation(text) else "still"
     if intent.cap == "shell" and "root" not in payload:
-        root = _shell_root(registry)
+        root = _shell_root(registry, text)
         if root:
             payload["root"] = root
     job_id = board.enqueue(intent.cap, text, extra=payload)
     return intent, job_id
 
 
-def _shell_root(registry: WorkshopRegistry) -> str:
+def _shell_root(registry: WorkshopRegistry, text: str = "") -> str:
+    from memory.apps import match_app
+
+    app = match_app(text)
+    want = ""
+    if app and app.get("root"):
+        want = str(Path(str(app["root"])).expanduser())
     for worker in registry.live():
         if "shell" not in (worker.get("caps") or []):
             continue
-        roots = worker.get("roots") or []
+        roots = [str(r) for r in (worker.get("roots") or []) if r]
+        if want:
+            for root in roots:
+                if root.rstrip("/") == want.rstrip("/") or want in root or root in want:
+                    return root
+            return want
         if roots:
-            return str(roots[0])
-    return ""
+            return roots[0]
+    return want
 
 
 def _roster(board: JobBoard) -> str:

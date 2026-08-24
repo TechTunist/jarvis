@@ -17,12 +17,12 @@ echo "  6 hold Home, tiny whisper (faster, sloppier)"
 echo "  m list microphones"
 read -r -p "choice: " c
 case "$c" in
-  1) exec "$PY" talk.py --brain agent --model grok-4.5 --stt none --tts none ;;
-  2) exec "$PY" talk.py --brain agent --model grok-4.5 --stt none --tts edge ;;
-  3) exec "$PY" talk.py --brain agent --model grok-4.5 --stt base --tts edge ;;
+  1) exec "$PY" talk.py --brain agent --model grok-4.6 --stt none --tts none ;;
+  2) exec "$PY" talk.py --brain agent --model grok-4.6 --stt none --tts edge ;;
+  3) exec "$PY" talk.py --brain agent --model grok-4.6 --stt base --tts edge ;;
   4) exec "$PY" talk.py --brain agent --model grok-4.6 --stt base --tts edge ;;
-  5) exec "$PY" talk.py --brain agent --model grok-4.5 --stt base --tts sapi ;;
-  6) exec "$PY" talk.py --brain agent --model grok-4.5 --stt tiny --tts edge ;;
+  5) exec "$PY" talk.py --brain agent --model grok-4.6 --stt base --tts sapi ;;
+  6) exec "$PY" talk.py --brain agent --model grok-4.6 --stt tiny --tts edge ;;
   m|M) exec "$PY" talk.py --list-mics ;;
   *) echo "unknown choice"; exit 1 ;;
 esac

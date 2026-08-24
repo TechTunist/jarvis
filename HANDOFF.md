@@ -1,21 +1,30 @@
-# Handoff — 24 Aug 2026 (evening)
+# Handoff — 24 Aug 2026
 
-Where Jarvis is, what landed this stretch, what to do next. Private data lives in `~/.jarvis/` (not this git repo). Never commit `ha.token` or `forge.json`. Never paste them into chat.
+Private data lives in `~/.jarvis/` (not this git repo). Never commit `ha.token` or `forge.json`. Never paste them into chat.
+
+**North star (every session):** read `AGENTS.md`. Before any work: does this move us toward movie JARVIS? You talk to Jarvis; some of him is busy; he can still answer. Mouth never waits on hands. Same persona. Full SuperGrok on the hands. Do not nest Cursor or grok.com.
 
 **Restart Talk after pull.** Phone: close the Safari tab and open the `/phone` URL again so it is not a cached page.
 
 ## What this machine is
 
 - **Laptop `xps`**, same LAN as Home Assistant (`homeassistant.local` → `192.168.0.113:8123`).
-- Talk + host workshop + `shell` workshop run **here** (dev fallback). Product is still one always-on receptionist **at home**.
-- SuperGrok / Grok Build CLI is the brain. Desk session has **no tools**.
+- Talk + workers run **here** (dev fallback). Product is still one always-on Jarvis **at home**.
+- SuperGrok Heavy / Grok Build CLI / Imagine is the brain. The **talking** session stays free (no long tools). Hands are **other** `grok` processes with the full suite. One persona. No Grok router process.
 - iPhone on **the same Wi‑Fi** is a remote mic + speaker. Use **`https://192.168.0.24:8791/phone`** (that is this laptop’s real address). Ignore `192.168.137.1` / `10.42.0.1` unless you actually start a hotspot.
 
 ## Just landed (this stretch)
 
-- Semantic **router** (warm `grok agent`, JSON caps) after a regex fast path. Mixed imagine+docs jobs. Desk stays tool-free.
-- Workshops: `search`, `vault-write`, `distill`, `home`, `imagine`, `docs`, **`forge`**, plus a **separate laptop `shell`** worker.
-- Latest-wins mouth: only the last thing Matt said is acted on. New input **cuts** speech. Old workshop jobs **keep running** but stay silent unless he asked for status.
+- Mouth is grok-4.6 (medium). It reasons, then may emit `[hands:cap] task`. No Watcher/Brave/listings phrase router. `try_local` is gone.
+- Regex left for house, hush, remember, and the older search/imagine/forge/code/docs fast paths that already worked.
+- Hands Grok gets desktop env (snap PATH, DISPLAY) and must not claim unverified success.
+- Intros only match household names. Restart Talk.
+
+- **One persona.** Mouth and hands share Jarvis. No Grok router process. Unsure is conversation.
+- Hands jobs write a `[hands]` brief. “How is it going?” is the mouth, in character.
+- Fresh weather cache stays on the mouth. Cold search / Imagine / code still enqueue.
+- Coding hands: full Grok Build minus Imagine, `grok-4.6` high effort, subagents on. Still no merge/push/Talk restart.
+- Latest-wins mouth: only the last thing Matt said is acted on. New input **cuts** speech. Old jobs **keep running**.
 - “Stop talking / be quiet / shut up” is **hush**, not the house.
 - Reminders: near-duplicate 20:00 bullets collapse; one spoken line. Live vault already has a single “Check Jarvis codebase”.
 - Phone HUD actually works: HTTPS, hold-to-talk, reply **on the phone**, laptop speakers **off** for that turn. Safari autoplay: silent loop from finger-down. ffmpeg `-nostdin` so PTT stdin swallow does not break decode.
@@ -32,18 +41,20 @@ Host caps: `search`, `vault-write`, `distill`, `home`, `imagine`, `docs`, `forge
 
 | You say | What happens |
 |---|---|
-| Hello / banter | Tool-free warm desk. No self-advertising. |
-| Lights / dark / Jak’s light | HA REST. Areas for living room. Unlock/garage/door wait for **yes**. |
-| Weather / look up | Workshop web search. Weather cache `~/.jarvis/cache/weather.md`. |
+| Hello / banter / engineering talk | Mouth. grok-4.6, no long tools. No self-advertising. |
+| Lights / dark / glow / gloomy | HA REST. Unlock/garage/door wait for **yes**. |
+| Weather (cache under 6h) | Mouth from `~/.jarvis/cache/weather.md`. |
+| Look up / cold weather | Hands web search, then he speaks the answer. |
 | Remember / remind me at 8pm | Vault. Duplicates of the same daily reminder do not stack. |
-| Draw / animate / PDF / spec | Ack, then files in Pictures / Videos / Documents. Assembly ≠ orbit of a sealed box. |
-| Run the tests / patch this repo | `shell` worker. Branch `jarvis/workshop-*`. No merge, no push, no Talk restart. |
+| Draw / animate / PDF / spec | Ack, then files in Pictures / Videos / Documents. |
+| Run the tests / patch / implement | Hands, full Grok Build. Branch `jarvis/workshop-*`. No merge, no push, no Talk restart. |
+| How is the work going? | Mouth reads the `[hands]` brief. |
 | Last workout / what did I lift / my weight | `forge` → Supabase (needs login in secrets). Read-only. |
 | Stop talking | Hush. Cuts audio. Background jobs may finish silently. |
-| New command while a job runs | Mouth follows you. Workshop job is **not** cancelled. Status questions still get the result spoken. |
+| New command while a job runs | Mouth follows you. Job is **not** cancelled. |
 | Phone hold-to-talk | Mic + speaker on the phone. Brain still this Talk process. |
 
-If chat answers a house request, the router called it chat. If he says the workbench is not connected, no live worker has that cap. Logs: `~/.jarvis/logs/sessions/`, `~/.jarvis/jobs/`.
+If he says he hasn't got hands for that, no live worker has that cap. Logs: `~/.jarvis/logs/sessions/`, `~/.jarvis/jobs/`.
 
 ## How to run
 
@@ -65,19 +76,21 @@ Phone: same Wi‑Fi as the XPS → Safari `https://192.168.0.24:8791/phone` → 
 | `~/.jarvis/secrets/ha.token` | HA long-lived token |
 | `~/.jarvis/secrets/forge.json` | `url`, `anon_key`, **`email`, `password` still needed** |
 
-## Tomorrow — suggested order
+## Next — movie test first
 
-1. **Finish Forge login.** Put BearJacked email/password in `forge.json`, chmod 600, restart Talk, ask “how was my last workout”. If RLS/login fails, the spoken line will say so — do not put the password in chat.
-2. **Apple Watch (not started).** Watch → Health on the iPhone only. Jarvis cannot pair with the Watch. Shortest path: iPhone Shortcut (or Health Auto Export) POSTs HR/HRV/sleep into a Supabase table on the **same** BearJacked project; Jarvis reads it like `forge`. BearJacked is a **web** app — it cannot read HealthKit until there is a native/Capacitor shell. Do not try to Bluetooth the Watch from the XPS.
-3. **Always-on Talk at home (Pi 5).** This laptop becomes HUD/mic + `shell`. HA token stays on the home LAN. Wake word later.
-4. **Merge-on-yes** for `jarvis/workshop-*`. Still no auto-commit to `main`.
-5. **Tailscale** so the phone works off this Wi‑Fi.
+Mouth and hands are one Jarvis in code. Restart Talk to pick it up. Do not add Forge/Watch/Pi/Tailscale until you have used this for a real conversation + a long job.
+
+1. **Restart Talk** (`./talk.sh` choice 3 = grok-4.6). Close the Safari `/phone` tab if you use it.
+2. Try: hello → a long job (draw / tests) → “how is it going?” / weather / a joke while it runs. Mouth should stay free. Same voice. No “workshop.”
+3. **Forge login** in `forge.json` when you want the training log. Watch / Pi / Tailscale still later.
+
+**Later (still movie):** Apple Watch via iPhone → same Supabase (Jarvis cannot pair with the Watch), always-on home host (Pi 5), merge-on-yes, Tailscale, calendar file.
 
 ## Known nits
 
 - Talk on this laptop is still the **dev fallback**, not the product host.
 - SuperGrok **ZDR** blocks Imagine *video* until `/privacy` is off or S3 is set. Stills work.
-- `talk.py` default `--model` is grok-4.6; launchers use 4.5.
+- Choice 3 is grok-4.6 (mouth low effort; hands high on coding jobs).
 - Wayland: Home PTT often needs Xorg; phone HUD otherwise.
 - Thomas is a composed British male, not Paul Bettany.
 - Two warm Grok processes (desk + router). Watch `[route] Nms`.

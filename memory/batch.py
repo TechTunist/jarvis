@@ -81,15 +81,15 @@ def coalesce_chat(texts: list[str], *, occupied: bool = False) -> str:
     body = "\n".join(f"- {t}" for t in cleaned)
     if occupied:
         lead = (
-            "Matt spoke while you were occupied with a workshop job and did not "
+            "Matt spoke while you were occupied with other work and did not "
             "get an answer at the time. Give ONE short reply that covers all of "
-            "it. First sentence at most six words. Acknowledge you were busy; "
+            "it. Acknowledge you were busy; "
             "do not answer each line separately; no list.\n\n"
         )
     else:
         lead = (
             "Matt said several things in a row before you answered. Give ONE "
-            "short reply that covers all of it. First sentence at most six words. "
+            "short reply that covers all of it. "
             "Do not answer each line separately; no list.\n\n"
         )
     return lead + "He said:\n" + body

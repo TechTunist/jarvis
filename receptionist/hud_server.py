@@ -28,9 +28,11 @@ incoming_jobs: queue.Queue = queue.Queue()
 
 
 class UtteranceJob:
-    def __init__(self, data: bytes, content_type: str):
+    def __init__(self, data: bytes, content_type: str, who: str = ""):
         self.data = data
         self.content_type = content_type
+        self.who = (who or "").strip()
+        self.kind = "utterance"
         self.event = threading.Event()
         self.mp3 = b""
         self.text = ""
@@ -150,7 +152,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header(
+            "Access-Control-Allow-Headers", "Content-Type, X-Jarvis-Who"
+        )
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
 
@@ -159,6 +163,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/state":
             with _lock:
                 body = json.dumps(_state).encode()
+            self._send(body, "application/json")
+            return
+        if path == "/people":
+            try:
+                from memory.home import JarvisHome
+                from memory.people import public_roster
+
+                body = json.dumps(public_roster(JarvisHome.discover())).encode()
+            except Exception:
+                body = b"[]"
             self._send(body, "application/json")
             return
         ua = (self.headers.get("User-Agent") or "").lower()
@@ -191,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.split("?")[0]
-        if path != "/utterance":
+        if path not in ("/utterance", "/glance"):
             self._send(b"not found", "text/plain", 404)
             return
         n = int(self.headers.get("Content-Length", "0") or 0)
@@ -199,7 +213,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send(b"bad size", "text/plain", 400)
             return
         data = self.rfile.read(n)
-        job = UtteranceJob(data, self.headers.get("Content-Type", "application/octet-stream"))
+        job = UtteranceJob(
+            data,
+            self.headers.get("Content-Type", "application/octet-stream"),
+            who=self.headers.get("X-Jarvis-Who", ""),
+        )
+        if path == "/glance":
+            job.kind = "glance"
         incoming_jobs.put(job)
         if not job.event.wait(120):
             self._send(b'{"error":"timeout"}', "application/json", 504)
@@ -262,6 +282,13 @@ def _try_firewall(port: int) -> None:
 
 def start_hud(open_browser: bool = True) -> None:
     global _httpd
+    try:
+        from memory.home import JarvisHome
+        from memory.people import write_public_roster
+
+        write_public_roster(JarvisHome.discover(), HUD_DIR / "people.json")
+    except Exception:
+        pass
     ips = lan_ips()
     pair = _ensure_cert(ips)
     _httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)

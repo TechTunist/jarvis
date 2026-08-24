@@ -13,6 +13,7 @@ from memory.session import iso
 
 _SAFE = re.compile(r"[^a-zA-Z0-9._-]+")
 TERMINAL = frozenset({"done", "error", "cancelled"})
+IN_FLIGHT = frozenset({"enqueued", "claimed", "progress"})
 CLAIM_STALE_S = 90
 _RESERVED = frozenset({"event", "id"})
 
@@ -131,7 +132,9 @@ class JobBoard:
             ev = snap.get("event")
             if ev == "enqueued":
                 found.append(snap)
-            elif ev == "claimed" and self._age_s(str(snap.get("ts") or ""), now) >= stale_claim_s:
+            elif ev in {"claimed", "progress"} and self._age_s(
+                str(snap.get("ts") or ""), now
+            ) >= stale_claim_s:
                 found.append(snap)
         return found
 
@@ -143,7 +146,7 @@ class JobBoard:
         seen: set[str] = set()
         for jid in list(pending_ids):
             snap = self.snapshot(jid)
-            if snap.get("event") in ("enqueued", "claimed"):
+            if snap.get("event") in IN_FLIGHT:
                 active.append(snap)
                 seen.add(jid)
         now = datetime.now(timezone.utc)
@@ -152,7 +155,7 @@ class JobBoard:
                 continue
             snap = self.snapshot(jid)
             ev = snap.get("event")
-            if ev not in ("enqueued", "claimed"):
+            if ev not in IN_FLIGHT:
                 continue
             if self._age_s(str(snap.get("ts") or ""), now) > 1800:
                 continue
@@ -174,7 +177,7 @@ class JobBoard:
                 "Nothing queued for that, sir. "
                 "Talking at the desk does not start Imagine or a PDF."
             )
-        return "Nothing on the workbench, sir."
+        return "Nothing in hand, sir."
 
     def active(self, caps: list[str] | None = None) -> list[dict]:
         want = set(caps) if caps is not None else None
@@ -194,10 +197,16 @@ class JobBoard:
 
     def claim(self, job_id: str, worker_id: str) -> bool:
         st = self.latest_status(job_id)
-        if st not in ("enqueued", "claimed"):
+        if st not in ("enqueued", "claimed", "progress"):
             return False
         self.append(job_id, {"event": "claimed", "worker": worker_id})
         return True
+
+    def progress(self, job_id: str, note: str) -> None:
+        line = " ".join((note or "").split())[:180]
+        if not line:
+            return
+        self.append(job_id, {"event": "progress", "note": line})
 
     def finish(
         self,
@@ -214,6 +223,14 @@ class JobBoard:
 
     def fail(self, job_id: str, error: str) -> None:
         self.append(job_id, {"event": "error", "error": str(error)[:800], "speak": ""})
+
+    def cancel(self, job_id: str, reason: str = "") -> None:
+        if self.latest_status(job_id) in TERMINAL:
+            return
+        event = {"event": "cancelled", "speak": ""}
+        if reason:
+            event["reason"] = str(reason)[:200]
+        self.append(job_id, event)
 
     def wait(
         self,

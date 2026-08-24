@@ -1,7 +1,7 @@
-"""Jarvis filing cabinet: vault, jobs, workshops, session logs.
+"""Jarvis filing cabinet: vault, jobs, workers, session logs.
 
-Talk stays tool-free. It loads a small boot bundle, appends logs, and
-enqueues workshop jobs through a local intent gate.
+The mouth stays free. It loads a small boot bundle, appends logs, and
+enqueues long work for the hands thread.
 """
 from memory.distill import distill_session
 from memory.home import JarvisHome

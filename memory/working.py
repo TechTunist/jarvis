@@ -3,16 +3,20 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from memory.home import JarvisHome
+from memory.jobs import IN_FLIGHT, JobBoard
+
+WEATHER_FRESH_S = 6 * 3600
 
 _PLACE = re.compile(
     r"weather location is\s+(.+?)(?:\s*$)",
     re.I,
 )
-_MATT_LINE = re.compile(r"(?i)(?:^|\n)Matt:\s*(.+)\s*$")
+_MATT_LINE = re.compile(r"(?i)(?:^|\n)[A-Za-z][A-Za-z'-]{1,24}:\s*(.+)\s*$")
 
 
 def spoken_user(raw: str) -> str:
@@ -83,11 +87,90 @@ def pack_recent(
     return "\n".join(rows)
 
 
-def desk_prefix(home: JarvisHome) -> str:
+def weather_fresh(home: JarvisHome, *, now: float | None = None) -> bool:
+    path = home.cache / "weather.md"
+    if not path.is_file():
+        return False
+    try:
+        age = (now if now is not None else time.time()) - path.stat().st_mtime
+    except OSError:
+        return False
+    return 0 <= age < WEATHER_FRESH_S
+
+
+def looks_like_weather(text: str) -> bool:
+    raw = " ".join((text or "").split())
+    if not raw:
+        return False
+    if re.search(r"\b(?:look(?:ing)?\s+up|search\s+for|google|headlines|the\s+news)\b", raw, re.I):
+        if not re.search(r"\b(?:weather|forecast)\b", raw, re.I):
+            return False
+    return bool(re.search(r"\b(?:weather|forecast)\b", raw, re.I))
+
+
+def hands_brief(home: JarvisHome, *, limit: int = 4, clip: int = 120) -> str:
+    board = JobBoard(home)
+    lines: list[str] = []
+    seen: set[str] = set()
+    for job_id in reversed(board.job_ids()):
+        snap = board.snapshot(job_id)
+        ev = str(snap.get("event") or "")
+        if ev not in IN_FLIGHT:
+            continue
+        if job_id in seen:
+            continue
+        seen.add(job_id)
+        cap = str(snap.get("cap") or "job")
+        note = " ".join(str(snap.get("note") or ev).split())[:clip]
+        asked = " ".join(str(snap.get("prompt") or "").split())[:clip]
+        bit = f"{cap}: {note}"
+        if asked:
+            bit += f" — {asked}"
+        lines.append(bit)
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return ""
+    return "Busy: " + "; ".join(reversed(lines)) + "."
+
+
+def last_jobs(home: JarvisHome, *, limit: int = 3, clip: int = 220) -> str:
+    """Finished work the mouth may treat as already said."""
+    board = JobBoard(home)
+    lines: list[str] = []
+    for job_id in reversed(board.job_ids()):
+        snap = board.snapshot(job_id)
+        if str(snap.get("event") or "") != "done":
+            continue
+        speak = " ".join(str(snap.get("speak") or "").split())[:clip]
+        if not speak:
+            continue
+        cap = str(snap.get("cap") or "job")
+        lines.append(f"{cap}: {speak}")
+        if len(lines) >= limit:
+            break
+    if not lines:
+        return ""
+    return "Last jobs: " + " ".join(reversed(lines))
+
+
+def desk_prefix(home: JarvisHome, person=None) -> str:
     parts: list[str] = []
+    if person is not None:
+        from memory.people import speaker_note
+
+        note = speaker_note(person)
+        if note:
+            parts.append(note)
     place = weather_place(home)
     if place:
         parts.append(f"Weather location: {place}.")
+    hands = hands_brief(home)
+    if hands:
+        parts.append("[hands]\n" + hands)
+    done = last_jobs(home)
+    if done:
+        parts.append("[last jobs]\n" + done)
     recent = pack_recent(home)
     if recent:
         parts.append("Recent conversation:\n" + recent)
@@ -96,8 +179,11 @@ def desk_prefix(home: JarvisHome) -> str:
     return (
         "[working memory — this session only]\n"
         + "\n".join(parts)
-        + "\nUse this if Matt refers to something he just said. "
-        "Do not claim you have no location when Weather location is set."
+        + "\nUse this if they refer to something just said. "
+        "Do not claim you have no location when Weather location is set. "
+        "If [hands] is present, that work is running — report it if asked; "
+        "do not invent extra progress. [last jobs] and Recent conversation "
+        "are already true; never deny them."
     )
 
 

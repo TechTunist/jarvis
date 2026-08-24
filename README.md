@@ -1,14 +1,16 @@
 # Jarvis
 
-A **Grok-native desktop receptionist**: hold a key, speak, get a fast British reply, with an Iron Man–style HUD. Built to stay snappy on small talk and to grow a **file-based memory** so it knows you better over time — without stuffing every conversation into every hello.
+A **movie-shaped Jarvis** on SuperGrok: hold a key, speak, get a short British reply, with an Iron Man–style HUD. You talk to one presence; long work runs on another thread so the mouth never goes dead; a file-based memory means he knows the household without stuffing every conversation into every hello.
 
-This is **not** the Grok iOS app and **not** a grok.com cloud agent. Talk launches a **local** `grok agent` process (Grok Build CLI) that uses your SuperGrok login. The model runs on xAI’s servers; the dock (mic, Whisper, HUD, personality files) runs on hardware you control.
+**Before any work:** does this move us toward JARVIS from the movies? See `AGENTS.md`.
+
+This is **not** the Grok iOS app, **not** grok.com, and **not** Cursor. Talk is a local loop around Grok Build CLI (same SuperGrok Heavy login). The model runs on xAI’s servers; the dock (mic, Whisper, HUD, personality files) and the hands (terminal, files, Imagine) run on hardware you control.
 
 ## Existing features
 
 - **Push-to-talk** — hold **Home**, speak, release. Mic is closed otherwise.
 - **Local ears** — `faster-whisper` **base.en** by default (tiny is a speed option). CUDA when available. Whisper is primed with household names (Jak/Jack, lamp, rooms). USB/Focusrite is preferred over the laptop mic.
-- **Brain** — warm `grok agent` (default **grok-4.5**, low effort). Same SuperGrok account as Grok Build. Tools stripped on this session so the front desk answers instead of becoming a coding agent.
+- **Brain** — warm `grok agent` (default **grok-4.6**, low effort). Same SuperGrok account as Grok Build. Tools stripped on this session so the front desk answers instead of becoming a coding agent.
 - **Mouth** — Microsoft Edge neural TTS (`en-GB-ThomasNeural`, slightly lowered rate / raised pitch — closest legal British male to MCU JARVIS, not a celebrity clone). Streamed with a short silence preroll so the first word is not clipped. Offline fallback: Windows SAPI.
 - **HUD** — fullscreen three.js J.A.R.V.I.S. in the browser (`https://127.0.0.1:8791/`). States: idle / listening / thinking / speaking. Press **F** for fullscreen.
 - **Intent gate** — high-precision local keywords for obvious commands and hellos. Everything else is a short tool-free Grok JSON **router** (`home` / `search` / `vault-write` / `imagine` / `docs` / `shell` / `forge` / chat). When unsure, chat. The desk never pretends to have switched a light.
@@ -175,7 +177,11 @@ python -m unittest discover -s tests
 
 ## The plan
 
-**Decision: Iron Man-shaped Jarvis.** One always-on receptionist, reachable at home and at the office, that runs the house, remembers the household in markdown, and dispatches workshop jobs. Not a new Talk process on whatever laptop is open. Not a brain in another town.
+**Decision: Iron Man-shaped Jarvis.** One presence you talk to — at home and later at the office — that runs the house, remembers the household in markdown, and uses this PC the way a skilled human would (Grok Build, Imagine, terminal, files). Not a receptionist who dispatches a mute labourer. Not a new Talk process on whatever laptop is open. Not a brain in another town.
+
+**The movie line:** you never talk to a receptionist, and you never wait while he thinks in another room. You talk to Jarvis; some of him is busy; he can still answer. A single `grok agent` cannot chat and code at once, so the mouth is one process and the hands are others, with one persona and a shared brief. SuperGrok Heavy, Grok Build, and Imagine are in; wrapping Cursor or grok.com as a nested bot is out.
+
+Standing test for every change: **does this move us toward a JARVIS-like system from the movies?** Accessories (Watch, Tailscale, Pi, extra caps) wait until that line is true.
 
 Tony’s JARVIS is one process with many endpoints (suit, phone, lab, house). That *is* doable. The dumb version was parking that process on the **office** Jetson while Home Assistant, the family, and the future room mics are at **home**. Always-on lives **at home**, next to the house.
 
@@ -193,7 +199,7 @@ Tony’s JARVIS is one process with many endpoints (suit, phone, lab, house). Th
 | Suit, holograms, perfect hearing | HUD in a browser; speakers you already own | No suit. No AR table. Tiny.en will mangle names. Edge TTS will not sing. |
 | Diagnoses and upgrades himself | **Self-maintenance job**: read this repo + logs + vault, propose a patch, run tests, ask you | Not unbounded recursive self-improvement. Talk does not edit the process that is speaking. You merge. |
 
-That is about as close as a SuperGrok + files + HA house gets without pretending. The 2s tool-free desk is the movie “yes, sir.” The vault is the movie “I remember.” The always-on home box is the movie “I’m here.” Workshop agents are the movie lab hands.
+That is about as close as SuperGrok + files + HA gets without pretending. The snappy mouth is the movie “yes, sir.” The vault is the movie “I remember.” The always-on home box is the movie “I’m here.” Background Grok Build / Imagine threads are the movie lab — same Jarvis, not a second staff.
 
 ### One brain, many faces
 
@@ -210,7 +216,7 @@ One live Talk. Starting Talk on a laptop because it is convenient is a **dev fal
 
 ### Always-on, house, memory
 
-- Talk stays **tool-free** (~2s). Search, Imagine, vault writes, HA, Grok Build are **background jobs**.
+- The talking session stays **free** (~2s). Search, Imagine, vault writes, HA, Grok Build are **the other thread** — same Jarvis, shared brief.
 - The live `grok agent` can stay warm (movie continuity). It must **not** grow forever: distill into markdown, keep the boot file tiny, or cost and latency explode. Closing Talk still must not delete the vault.
 - HA is always reachable because Talk is in the **same house**. From the office you still talk to home Jarvis; lights still work. Confirm dangerous actions out loud.
 - Speaker ID (later) loads that person’s vault. Family context is files, not “the model just knows.”
@@ -243,7 +249,7 @@ V1 is push-to-talk and the phone HUD. Always-listening is a *later house feature
 
 ### Build order
 
-1. Keep Talk tool-free and on the ~2s path (today).
+1. Keep the **mouth** free and snappy (no long tools on the talking session). Hands are other Grok processes with the full suite. One persona, shared brief.
 2. Markdown vault + git + **distill** — boot bundle, session jsonl, daily stub, job board, host workshop (search / vault-write / distill / home / imagine / docs / forge) and laptop `shell` worker are in. On-demand vault reads are next.
 3. Phone HUD over LAN (works). Tailscale for off-LAN is next.
 4. **HA on the LAN** — host workshop `home` cap talks to `homeassistant.local:8123`. Token in `~/.jarvis/secrets/ha.token`. Confirm unlocks/garage/doors out loud. A Pi-side proxy (token never leaves home) is what the office needs later; not required on this laptop.

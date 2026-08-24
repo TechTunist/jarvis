@@ -1188,8 +1188,8 @@ def roster_markdown(states: list[dict]) -> str:
         if area and area not in rooms:
             rooms.append(area)
     parts = [
-        "House devices from Home Assistant. The workshop actuates these; "
-        "the desk does not flip switches."
+        "House devices from Home Assistant. The mouth does not flip switches; "
+        "the hands thread does."
     ]
     if lights:
         parts.append("Lights: " + "; ".join(lights) + ".")

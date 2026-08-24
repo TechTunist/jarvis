@@ -171,7 +171,33 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(reg.has_cap("imagine"))
         self.assertTrue(reg.has_cap("docs"))
         self.assertTrue(reg.has_cap("forge"))
+        self.assertTrue(reg.has_cap("see"))
+        self.assertTrue(reg.has_cap("diagnose"))
         self.assertFalse(reg.has_cap("shell"))
+
+    def test_see_does_not_call_grok_with_a_still(self) -> None:
+        dest = self.home.cache / "eyes" / "shot.jpg"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"\xff\xd8\xff\xd9")
+
+        def complete(prompt: str, **kwargs) -> str:
+            self.fail("cloud vision must not run")
+            return "nope"
+
+        worker = HostWorker(
+            self.home,
+            worker_id="eyes-test",
+            caps=("see",),
+            complete=complete,
+        )
+        jid = self.board.enqueue(
+            "see", "have a look", extra={"path": str(dest), "address": "sir"}
+        )
+        self.assertTrue(worker.tick())
+        snap = self.board.snapshot(jid)
+        self.assertEqual(snap["event"], "done")
+        self.assertIn("don't send pictures", str(snap.get("speak") or "").lower())
+        self.assertEqual(snap.get("result"), "refused-cloud")
 
     def test_docs_writes_pdf_under_documents(self) -> None:
         docs = Path(self.tmp.name) / "Documents" / "jarvis"
@@ -357,24 +383,28 @@ class GrokrunParseTests(unittest.TestCase):
         self.assertIn("image_gen", NO_TOOLS)
         self.assertIn("image_to_video", NO_TOOLS)
 
-    def test_prompt_argv_shell_allowlists_repo_tools(self) -> None:
+    def test_prompt_argv_shell_uses_full_build_minus_imagine(self) -> None:
         from memory.grokrun import prompt_argv
-        from memory.shell import SHELL_TOOLS
+        from memory.shell import SHELL_DENY
 
         argv = prompt_argv(
             "run tests",
             grok=Path("/tmp/grok"),
-            model="grok-4.5",
+            model="grok-4.6",
             system="sys",
-            web=False,
-            tools=SHELL_TOOLS,
+            web=True,
+            disallowed=SHELL_DENY,
+            subagents=True,
+            effort="high",
             cwd=Path("/tmp/jarvis"),
         )
-        self.assertIn("--tools", argv)
-        tools = argv[argv.index("--tools") + 1]
-        self.assertIn("run_terminal_cmd", tools)
-        self.assertIn("search_replace", tools)
-        self.assertNotIn("--disallowed-tools", argv)
+        self.assertNotIn("--tools", argv)
+        self.assertNotIn("--no-subagents", argv)
+        self.assertIn("--effort", argv)
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
+        denied = argv[argv.index("--disallowed-tools") + 1]
+        self.assertIn("image_gen", denied)
+        self.assertNotIn("run_terminal_cmd", denied)
         self.assertIn("--cwd", argv)
 
 

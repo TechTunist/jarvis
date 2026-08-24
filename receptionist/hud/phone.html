@@ -26,6 +26,19 @@
       box-shadow: 0 0 24px rgba(255, 180, 0, 0.55);
     }
     #ptt.hot { background: #ffb020; }
+    #who {
+      position: fixed; left: 10px; right: 10px;
+      top: max(10px, env(safe-area-inset-top));
+      z-index: 2147483647;
+      display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+    }
+    #who button {
+      -webkit-appearance: none; appearance: none;
+      border: 2px solid #ffcc33; background: #1a1200;
+      color: #ffcc33; font: 700 16px -apple-system, system-ui, sans-serif;
+      padding: 10px 14px; border-radius: 10px;
+    }
+    #who button.on { background: #c47a00; color: #1a1000; }
     #msg {
       position: fixed; left: 12px; right: 12px;
       bottom: calc(120px + env(safe-area-inset-bottom));
@@ -37,7 +50,8 @@
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="msg">Join the PC hotspot. Hold the button. Allow mic.</div>
+<div id="who"></div>
+<div id="msg">Who is talking? Tap a name, then hold.</div>
 <button id="ptt" type="button">HOLD TO TALK</button>
 <audio id="out" playsinline webkit-playsinline></audio>
 <script>
@@ -46,18 +60,84 @@ const X = C.getContext("2d");
 const ptt = document.getElementById("ptt");
 const msg = document.getElementById("msg");
 const out = document.getElementById("out");
+const whoBar = document.getElementById("who");
+let whoSlug = localStorage.getItem("jarvis_who") || "";
+let whoName = localStorage.getItem("jarvis_who_name") || "";
 let W = 0, H = 0, t0 = performance.now();
 const hud = { state: "idle", level: 0, line: "", name: "J.A.R.V.I.S." };
 let rec = null, chunks = [], holding = false, actx = null;
+let replyUrl = null;
 
 function resize() { W = C.width = innerWidth; H = C.height = innerHeight; }
 addEventListener("resize", resize); resize();
 
 async function poll() {
-  try { Object.assign(hud, await (await fetch("/state", { cache: "no-store" })).json()); }
-  catch (_) {}
+  try {
+    const s = await (await fetch("/state", { cache: "no-store" })).json();
+    if (holding) Object.assign(hud, s, { state: "listening" });
+    else if (ending) Object.assign(hud, s, { state: "thinking" });
+    else Object.assign(hud, s);
+  } catch (_) {}
 }
 setInterval(poll, 80); poll();
+
+function setWho(slug, name) {
+  whoSlug = slug || "";
+  whoName = name || slug || "";
+  if (whoSlug) {
+    localStorage.setItem("jarvis_who", whoSlug);
+    localStorage.setItem("jarvis_who_name", whoName);
+  } else {
+    localStorage.removeItem("jarvis_who");
+    localStorage.removeItem("jarvis_who_name");
+  }
+  [...whoBar.querySelectorAll("button[data-slug]")].forEach((b) => {
+    b.classList.toggle("on", b.dataset.slug === whoSlug);
+  });
+  if (whoName) msg.textContent = whoName + " — hold to talk";
+}
+
+async function loadPeople() {
+  let people = [];
+  for (const url of ["/people", "/people.json"]) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) continue;
+      const data = await r.json();
+      if (Array.isArray(data) && data.length) {
+        people = data;
+        break;
+      }
+    } catch (_) {}
+  }
+  whoBar.innerHTML = "";
+  (people || []).forEach((p) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.slug = p.slug;
+    b.textContent = p.name;
+    b.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setWho(p.slug, p.name);
+    });
+    whoBar.appendChild(b);
+  });
+  const extra = document.createElement("button");
+  extra.type = "button";
+  extra.textContent = "Someone else";
+  extra.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const n = (prompt("First name?") || "").trim();
+    if (!n) return;
+    setWho(n.split(/\s+/)[0], n.split(/\s+/)[0]);
+  });
+  whoBar.appendChild(extra);
+  if (whoSlug) setWho(whoSlug, whoName || whoSlug);
+  else msg.textContent = "Who is talking? Tap a name, then hold.";
+}
+loadPeople();
 
 function col(state) {
   if (state === "listening") return [255, 176, 32];
@@ -115,6 +195,16 @@ function mime() {
 // allows play() after the slow round-trip to Talk.
 const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAABErAAABAAgAZGF0YQAAAAA=";
 
+function stopReply() {
+  try { out.pause(); } catch (_) {}
+  out.loop = false;
+  out.currentTime = 0;
+  if (replyUrl) {
+    try { URL.revokeObjectURL(replyUrl); } catch (_) {}
+    replyUrl = null;
+  }
+}
+
 function unlockAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (AC) {
@@ -128,10 +218,14 @@ function unlockAudio() {
       src.start(0);
     } catch (_) {}
   }
+  // Never keep playing the last reply. Safari needs a looping element from
+  // this gesture so play() still works after the round-trip — use silence.
+  stopReply();
   out.muted = false;
   out.loop = true;
   try {
-    if (!out.src || out.src.indexOf("blob:") !== 0) out.src = SILENT_WAV;
+    out.src = SILENT_WAV;
+    out.load();
     const p = out.play();
     if (p && p.catch) p.catch(() => {});
   } catch (_) {}
@@ -156,6 +250,10 @@ function startHold(e) {
     e.stopPropagation();
   }
   if (holding || ending) return;
+  if (!whoSlug) {
+    msg.textContent = "Tap your name first.";
+    return;
+  }
   if (!window.MediaRecorder) {
     msg.textContent = "This browser cannot record. iOS 14.3+ Safari, use https.";
     return;
@@ -165,6 +263,7 @@ function startHold(e) {
     return;
   }
   holding = true;
+  hud.state = "listening";
   cancelHold = false;
   rec = null;
   if (e && e.pointerId != null) {
@@ -186,6 +285,7 @@ function startHold(e) {
     } catch (err) {
       stream.getTracks().forEach((tr) => tr.stop());
       holding = false;
+      hud.state = "idle";
       rec = null;
       ptt.classList.remove("hot");
       ptt.textContent = "HOLD TO TALK";
@@ -193,6 +293,7 @@ function startHold(e) {
     }
   }).catch((err) => {
     holding = false;
+    hud.state = "idle";
     rec = null;
     ptt.classList.remove("hot");
     ptt.textContent = "HOLD TO TALK";
@@ -201,12 +302,14 @@ function startHold(e) {
 }
 
 async function playReply(buf) {
-  const url = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
+  stopReply();
+  replyUrl = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
   out.loop = false;
   out.muted = false;
-  out.src = url;
+  out.src = replyUrl;
   out.load();
   try {
+    hud.state = "speaking";
     await out.play();
     msg.textContent = "Speaking on this phone";
   } catch (err) {
@@ -226,6 +329,7 @@ async function endHold(e) {
   }
   if (!holding || ending) return;
   ending = true;
+  hud.state = "thinking";
   unlockAudio();
   ptt.classList.remove("hot");
   ptt.textContent = "THINKING…";
@@ -239,6 +343,7 @@ async function endHold(e) {
   if (!rec) {
     cancelHold = true;
     ending = false;
+    hud.state = "idle";
     ptt.textContent = "HOLD TO TALK";
     msg.textContent = "Mic did not start. Tap Allow, then hold again.";
     return;
@@ -256,6 +361,7 @@ async function endHold(e) {
   });
   if (blob.size < 800) {
     ending = false;
+    hud.state = "idle";
     msg.textContent = "Too short — keep holding while you speak.";
     ptt.textContent = "HOLD TO TALK";
     return;
@@ -264,7 +370,10 @@ async function endHold(e) {
     const r = await fetch("/utterance", {
       method: "POST",
       body: blob,
-      headers: { "Content-Type": blob.type || "audio/mp4" },
+      headers: {
+        "Content-Type": blob.type || "audio/mp4",
+        "X-Jarvis-Who": whoSlug,
+      },
     });
     const ctype = (r.headers.get("Content-Type") || "").toLowerCase();
     if (!r.ok) {
@@ -275,6 +384,7 @@ async function endHold(e) {
       msg.textContent = detail;
       ptt.textContent = "HOLD TO TALK";
       ending = false;
+      hud.state = "idle";
       return;
     }
     const buf = await r.arrayBuffer();
@@ -282,6 +392,7 @@ async function endHold(e) {
       msg.textContent = "No audio came back. You should still hear the PC.";
       ptt.textContent = "HOLD TO TALK";
       ending = false;
+      hud.state = "idle";
       return;
     }
     await playReply(buf);
@@ -299,7 +410,12 @@ ptt.addEventListener("pointercancel", (e) => {
   if (e) e.preventDefault();
 });
 
-out.addEventListener("play", () => { msg.textContent = "Speaking"; });
+out.addEventListener("play", () => {
+  if (!out.loop) msg.textContent = "Speaking on this phone";
+});
+out.addEventListener("ended", () => {
+  if (!holding && !ending) msg.textContent = "Hold the button.";
+});
 </script>
 </body>
 </html>

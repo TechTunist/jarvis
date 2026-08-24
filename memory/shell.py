@@ -1,6 +1,6 @@
-"""Laptop shell workshop: this git checkout only.
+"""Laptop hands: advertised git checkouts.
 
-The desk stays tool-free. Merge and push stay a human gate. Talk is never
+The mouth stays free. Merge and push stay a human gate. Talk is never
 restarted from under itself.
 """
 from __future__ import annotations
@@ -10,22 +10,32 @@ import subprocess
 import sys
 from pathlib import Path
 
-from memory.grokrun import extract_json
+from memory.grokrun import NO_MEDIA, extract_json
 from memory.home import JarvisHome
+from memory.prompt import HANDS_RULES
 
 SHELL_CAPS = ("shell",)
-SHELL_TOOLS = "run_terminal_cmd,read_file,search_replace,grep,list_dir,glob"
+SHELL_DENY = NO_MEDIA
 SHELL_SYSTEM = (
-    "You are Jarvis's laptop workshop, not the front desk. "
-    "This directory is the Jarvis git checkout. Use tools here only. "
+    HANDS_RULES
+    + "You are on Matt's PC. Use Grok Build tools. "
+    "Read and list anywhere under /home/matt except ~/.jarvis/secrets, ~/.ssh, "
+    "and *.pem / *credential* / *.token. "
+    "Hardware, directories, and local HTTP APIs: use the tools. "
+    "If an app catalogue is in the prompt, use those URLs and start commands. "
+    "Do not screenshot. Do not send pictures off the machine. "
+    "Writes, git, and patches only in the advertised checkout for that job. "
     "Run tests with: python3 -m unittest discover -s tests. "
     "For edits, create branch jarvis/workshop-<short-slug> first. "
     "Never git push. Never merge. Never commit to main or master. "
     "Never restart Talk, never kill talk.py, never touch ~/.jarvis/secrets. "
-    "No Imagine, no web search, no other repos. "
+    "No Imagine. "
+    "Never report success you did not verify. xdg-open returning is not proof "
+    "a tab opened. If a binary is missing, DISPLAY is empty, or a command "
+    "errors, say that. Prefer an honest failure over a movie line. "
     "When finished, JSON only: "
-    '{"speak":"<one or two spoken sentences>","ok":true,"branch":"<name or empty>"}. '
-    "British butler. First sentence at most six words. No markdown, no preamble."
+    '{"speak":"<what happened; if it failed, why>","ok":false,"branch":"<name or empty>"}. '
+    "ok is true only if the asked work actually happened. No markdown, no preamble."
 )
 
 _TESTS = re.compile(
@@ -140,7 +150,7 @@ def speak_from_grok(raw: str) -> tuple[str, str]:
     text = " ".join((raw or "").split())
     if text:
         return text[:280], "done"
-    return "The workshop finished that, sir.", "done"
+    return "That's done, sir.", "done"
 
 
 def shell_brief(home: JarvisHome, asked: str) -> str:
@@ -151,7 +161,10 @@ def shell_brief(home: JarvisHome, asked: str) -> str:
     if recent:
         chunks.append("Recent conversation:\n" + recent)
     chunks.append("Matt asked: " + " ".join((asked or "").split()))
+    from memory.apps import brief_for_prompt
+
+    chunks.append(brief_for_prompt(home, asked))
     chunks.append(
-        "Stay in this git checkout. Do not merge, push, or restart Talk."
+        "Do not merge, push, or restart Talk. Reads may leave this checkout; writes may not."
     )
     return "\n\n".join(chunks)

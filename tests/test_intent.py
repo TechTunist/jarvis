@@ -16,6 +16,7 @@ from memory.intent import (
     IMAGINE,
     REMEMBER,
     SEARCH,
+    SEE,
     STATUS,
     classify,
     file_line,
@@ -41,6 +42,8 @@ class ClassifyTests(unittest.TestCase):
             "Can you imagine",
             "Imagine that",
             "Generate a report",
+            "How old are you Jarvis?",
+            "Explain your capabilities.",
         ):
             with self.subTest(text=text):
                 self.assertEqual(classify(text).kind, CHAT.kind)
@@ -49,6 +52,12 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(classify("how was my last workout").cap, FORGE.cap)
         self.assertEqual(classify("did I train yesterday").cap, FORGE.cap)
 
+    def test_see_is_not_search(self) -> None:
+        self.assertEqual(classify("have a look at this").cap, SEE.cap)
+        self.assertEqual(classify("what do you see").cap, SEE.cap)
+        self.assertEqual(classify("look at the screen").cap, SEE.cap)
+        self.assertEqual(classify("Look up the Premier League table").cap, SEARCH.cap)
+
     def test_search(self) -> None:
         for text in (
             "What's the weather in London?",
@@ -56,6 +65,9 @@ class ClassifyTests(unittest.TestCase):
             "Search for the nearest pharmacy",
             "What are the headlines?",
             "What's the stock price of Tesla?",
+            "Bitcoin price right now.",
+            "what's the bitcoin price",
+            "price of ethereum",
         ):
             with self.subTest(text=text):
                 self.assertEqual(classify(text).cap, SEARCH.cap)
@@ -109,7 +121,8 @@ class ClassifyTests(unittest.TestCase):
         )
         self.assertEqual(classify("the living room is too bright").cap, HOME.cap)
         self.assertEqual(classify("dim the living room").cap, HOME.cap)
-        self.assertEqual(classify("what lights do we have").cap, HOME.cap)
+        self.assertEqual(classify("what lights do we have").kind, CHAT.kind)
+        self.assertEqual(classify("turn the kitchen lights off").cap, HOME.cap)
         self.assertEqual(classify("that's too bright a future").kind, CHAT.kind)
         self.assertEqual(
             classify("it is a little dark in the living room").cap, HOME.cap
@@ -166,6 +179,32 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(classify("Run the tests in this repo").cap, CODE.cap)
         self.assertEqual(classify("Edit talk.py please").kind, CHAT.kind)
         self.assertEqual(classify("Edit talk.py in the repo").cap, CODE.cap)
+        self.assertEqual(classify("go implement that").cap, CODE.cap)
+        self.assertEqual(classify("patch intent.py").cap, CODE.cap)
+        self.assertEqual(classify("let's talk through the routing").kind, CHAT.kind)
+        self.assertEqual(classify("What processor is on the laptop?").cap, CODE.cap)
+        self.assertEqual(
+            classify("Can you see the hardware that you are running on?").cap, CODE.cap
+        )
+        self.assertEqual(
+            classify("Can you see the cryptological directory?").cap, CODE.cap
+        )
+        self.assertEqual(
+            classify("How many lines of code are there in your code base?").cap,
+            CODE.cap,
+        )
+        self.assertEqual(classify("What's in the news").cap, SEARCH.cap)
+        self.assertEqual(classify("can you start the watcher program please").kind, CHAT.kind)
+        self.assertEqual(classify("fetch the listing details").kind, CHAT.kind)
+        self.assertEqual(classify("get the other thread to look").kind, CHAT.kind)
+        self.assertEqual(
+            classify("you said you would open it but it didn't happen").kind,
+            CHAT.kind,
+        )
+
+    def test_glow_and_gloomy_are_house(self) -> None:
+        self.assertEqual(classify("kill the glow by the sofa").cap, HOME.cap)
+        self.assertEqual(classify("it is gloomy in here").cap, HOME.cap)
 
     def test_file_line_strips_wrapper(self) -> None:
         self.assertEqual(file_line("Remember I take tea at five."), "I take tea at five")
@@ -212,6 +251,15 @@ class EnqueueTests(unittest.TestCase):
         intent, job_id = hit
         self.assertEqual(intent.cap, "search")
         self.assertEqual(self.board.latest_status(job_id), "enqueued")
+
+    def test_fresh_weather_stays_on_the_mouth(self) -> None:
+        self.reg.advertise("host", ["search"])
+        (self.home.cache / "weather.md").write_text("Rain later.\n", encoding="utf-8")
+        self.assertIsNone(
+            maybe_enqueue("What's the weather this week?", self.board, self.reg)
+        )
+        hit = maybe_enqueue("Look up the Premier League table", self.board, self.reg)
+        self.assertIsNotNone(hit)
 
     def test_imagine_enqueue_marks_video(self) -> None:
         self.reg.advertise("host", ["imagine"])

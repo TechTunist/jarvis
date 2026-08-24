@@ -10,6 +10,7 @@ receptionist/agent.stderr.log
 receptionist/router.stderr.log
 receptionist/.venv/
 receptionist/certs/
+receptionist/hud/people.json
 
 # Research clones and old Hermes glue (not this product)
 *-explore/

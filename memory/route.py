@@ -31,7 +31,7 @@ ROUTE_SYSTEM = (
     "an artefact, that is NOT chat. "
     "Hardware/engineering specs and PDFs = docs. Drawings/animations = imagine. "
     "Use BOTH imagine and docs when they asked for pictures and a document. "
-    "When unsure between chat and work, choose work. You only route."
+    "When unsure between chat and work, choose chat. You only route."
 )
 
 _OBVIOUS_CHAT = re.compile(
@@ -72,6 +72,13 @@ _CAP_ALIAS = {
     "hush": "hush",
     "quiet": "hush",
     "silence": "hush",
+    "see": "see",
+    "look": "see",
+    "eyes": "see",
+    "vision": "see",
+    "camera": "see",
+    "diagnose": "diagnose",
+    "diagnostic": "diagnose",
 }
 
 
@@ -107,6 +114,7 @@ def intent_for_cap(cap: str, text: str):
         IMAGINE,
         REMEMBER,
         SEARCH,
+        SEE,
         STATUS,
     )
 
@@ -127,10 +135,16 @@ def intent_for_cap(cap: str, text: str):
         return CODE
     if key == "forge":
         return FORGE
+    if key == "see":
+        return SEE
     if key == "status":
         return STATUS
     if key == "hush":
         return HUSH
+    if key == "diagnose":
+        from memory.intent import DIAGNOSE
+
+        return DIAGNOSE
     return CHAT
 
 

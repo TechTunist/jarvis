@@ -110,7 +110,7 @@ class SemanticRouteTests(unittest.TestCase):
         self.assertEqual([i.cap for i in got], ["imagine", "docs"])
         from memory.intent import resolve_intents
 
-        routed = resolve_intents(said, caps=caps, run=_run(["imagine", "docs"]))
+        routed = resolve_intents(said, caps=caps)
         self.assertEqual({i.cap for i in routed}, {"imagine", "docs"})
 
 
@@ -131,15 +131,15 @@ class ResolveIntentTests(unittest.TestCase):
         self.assertEqual(intent.kind, CHAT.kind)
         self.assertEqual(runner.prompts, [])
 
-    def test_natural_house_uses_router(self) -> None:
-        runner = _run("home")
+    def test_glow_is_home_without_router(self) -> None:
+        runner = _run("chat")
         intent = resolve_intent(
             "kill the glow by the sofa",
             caps=("home",),
             run=runner,
         )
         self.assertEqual(intent.cap, HOME.cap)
-        self.assertTrue(runner.prompts)
+        self.assertEqual(runner.prompts, [])
 
     def test_regex_chat_examples_stay_chat_without_runner(self) -> None:
         for text in (
