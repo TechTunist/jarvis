@@ -1,17 +1,17 @@
-# Handoff — 24 Aug 2026
+# Handoff — 28 Aug 2026
 
 Private data lives in `~/.jarvis/` (not this git repo). Never commit `ha.token` or `forge.json`. Never paste them into chat.
 
 **North star (every session):** read `AGENTS.md`. Before any work: does this move us toward movie JARVIS? You talk to Jarvis; some of him is busy; he can still answer. Mouth never waits on hands. Same persona. Full SuperGrok on the hands. Do not nest Cursor or grok.com.
 
-**Restart Talk after pull.** Phone: close the Safari tab and open the `/phone` URL again so it is not a cached page.
+**Restart Talk after pull.** Phone icon is Tailscale (`https://jarvis.tail9f6146.ts.net/phone`), not a LAN IP. Close a stale Safari tab if you still have one.
 
 ## What this machine is
 
 - **Laptop `xps`**, same LAN as Home Assistant (`homeassistant.local` → `192.168.0.113:8123`).
 - Talk + workers run **here** (dev fallback). Product is still one always-on Jarvis **at home**.
 - SuperGrok Heavy / Grok Build CLI / Imagine is the brain. The **talking** session stays free (no long tools). Hands are **other** `grok` processes with the full suite. One persona. No Grok router process.
-- iPhone on **the same Wi‑Fi** is a remote mic + speaker. Use **`https://192.168.0.24:8791/phone`** (that is this laptop’s real address). Ignore `192.168.137.1` / `10.42.0.1` unless you actually start a hotspot.
+- iPhone is a remote mic + speaker over **Tailscale**. One Home Screen icon: **`https://jarvis.tail9f6146.ts.net/phone`**. Same URL if Talk moves to another PC. Not `192.168.0.24`. Not Funnel (not on the public internet).
 
 ## Just landed (this stretch)
 
@@ -52,22 +52,49 @@ Host caps: `search`, `vault-write`, `distill`, `home`, `imagine`, `docs`, `forge
 | Last workout / what did I lift / my weight | `forge` → Supabase (needs login in secrets). Read-only. |
 | Stop talking | Hush. Cuts audio. Background jobs may finish silently. |
 | New command while a job runs | Mouth follows you. Job is **not** cancelled. |
-| Phone hold-to-talk | Mic + speaker on the phone. Brain still this Talk process. |
+| Phone hold-to-talk | Mic + speaker on the phone. Brain still this Talk process. Tailscale on the phone; icon is `jarvis.tail9f6146.ts.net`. |
 
 If he says he hasn't got hands for that, no live worker has that cap. Logs: `~/.jarvis/logs/sessions/`, `~/.jarvis/jobs/`.
 
 ## How to run
 
+**One Talk.** Stop Talk on any other PC before starting it here. Two Talks = two Jarvises.
+
 ```bash
-cd ~/jarvis
+cd ~/jarvis          # Windows: wherever you cloned
 git pull
 cd receptionist
-./talk.sh          # 3 = Home + base.en + Thomas + HUD
+./talk.sh            # Ubuntu. Choice 3 = Home + base.en + Thomas + HUD
+talk.cmd             # Windows
 ```
+
+Talk advertises Tailscale Service `svc:jarvis` while it is up, and drains it on exit. The phone icon does not change.
 
 HA: `./ha.sh --check` from the **repo**. Tests: `python3 -m unittest discover -s tests` (no Grok, no GPU, no token).
 
-Phone: same Wi‑Fi as the XPS → Safari `https://192.168.0.24:8791/phone` → Advanced → Visit → allow mic → hold until **Release to send**.
+### Tailscale — phone finds whoever is running Talk
+
+Audio is device-to-device (WireGuard). Tailscale’s cloud is the phone book, not the voice path. Personal plan is free. **Do not enable Funnel.**
+
+**Already done once (do not recreate):**
+
+- Tailnet `tail9f6146.ts.net`, account TechTunist. MagicDNS + HTTPS certificates on.
+- Access controls → **Tags** (not Policies): tag **`jarvis`** → `tag:jarvis`.
+- [Services](https://login.tailscale.com/admin/services): service **`jarvis`**, endpoint **`tcp:443`**.
+- iPhone: Tailscale app, same account, VPN left on. Home Screen → **`https://jarvis.tail9f6146.ts.net/phone`**. Allow mic once.
+
+**This PC as the Talk host** (Windows or Linux — after `git pull`):
+
+1. Install Tailscale ([download](https://tailscale.com/download)), sign in as **the same account as the iPhone**. It will appear under Machines. That alone is not enough.
+2. Linux, once: `sudo tailscale set --operator="$USER"` so Talk can run Serve without root.
+3. Tag **this** machine `tag:jarvis` (Machines → this PC → Edit tags). Service hosts must be tagged. **Do not tag the iPhone.**
+4. Stop Talk anywhere else.
+5. Start Talk. If Services shows a pending host, **Approve** it (xps already approved).
+6. Phone: Tailscale connected → tap the **same** Home Screen icon. No new address.
+
+**This PC as a client only** (browser HUD, not the mouth): Tailscale, same account, **do not** tag, **do not** start Talk. Open `https://jarvis.tail9f6146.ts.net`.
+
+LAN `https://<ip>:8791/phone` still works on the same Wi‑Fi if Tailscale is down (Safari cert warning). The icon is Tailscale.
 
 ## Secrets (never git)
 
@@ -76,15 +103,15 @@ Phone: same Wi‑Fi as the XPS → Safari `https://192.168.0.24:8791/phone` → 
 | `~/.jarvis/secrets/ha.token` | HA long-lived token |
 | `~/.jarvis/secrets/forge.json` | `url`, `anon_key`, **`email`, `password` still needed** |
 
-## Next — movie test first
+## Next
 
-Mouth and hands are one Jarvis in code. Restart Talk to pick it up. Do not add Forge/Watch/Pi/Tailscale until you have used this for a real conversation + a long job.
+Phone door is Tailscale Serve `svc:jarvis`. Restart Talk on this XPS to pick up advertise-on-start (do not restart the live Talk from under itself).
 
-1. **Restart Talk** (`./talk.sh` choice 3 = grok-4.6). Close the Safari `/phone` tab if you use it.
-2. Try: hello → a long job (draw / tests) → “how is it going?” / weather / a joke while it runs. Mouth should stay free. Same voice. No “workshop.”
-3. **Forge login** in `forge.json` when you want the training log. Watch / Pi / Tailscale still later.
+1. iPhone: Tailscale on → Home Screen icon `https://jarvis.tail9f6146.ts.net/phone`.
+2. Windows PC as host: follow **Tailscale — this PC as the Talk host** above after `git pull`. Stop Talk here first.
+3. **Forge login** in `forge.json` when you want the training log.
 
-**Later (still movie):** Apple Watch via iPhone → same Supabase (Jarvis cannot pair with the Watch), always-on home host (Pi 5), merge-on-yes, Tailscale, calendar file.
+**Later (still movie):** always-on home host (Pi 5), merge-on-yes, Apple Watch via iPhone → same Supabase, calendar file, wake word. Not a second Talk.
 
 ## Known nits
 

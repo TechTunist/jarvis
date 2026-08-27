@@ -1,6 +1,7 @@
 """HUD assets exist so the desktop face can boot without a CDN."""
 from __future__ import annotations
 
+import sys
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,18 @@ class HudAssetsTests(unittest.TestCase):
         src = (ROOT / "receptionist" / "hud_server.py").read_text(encoding="utf-8")
         self.assertIn("text/javascript", src)
         self.assertIn(".js", src)
+        self.assertIn("svc:jarvis", src)
+        self.assertIn("advertise_phone_door", src)
+
+    def test_phone_url_follows_the_service_not_the_pc(self) -> None:
+        sys.path.insert(0, str(ROOT / "receptionist"))
+        from hud_server import phone_url_from_dns
+
+        self.assertEqual(
+            phone_url_from_dns("xps.tail9f6146.ts.net."),
+            "https://jarvis.tail9f6146.ts.net/phone",
+        )
+        self.assertEqual(phone_url_from_dns(""), "")
 
 
 if __name__ == "__main__":

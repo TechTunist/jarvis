@@ -42,6 +42,6 @@ Do **not** put Bash/Write/Imagine on the talking Grok session. That is dead air 
 
 **Now:** one persona, live job brief on the mouth, default-to-talk, hands = full Grok Build, easy facts from cache.
 
-**Later (still movie, not first):** always-on home host, wake word, Tailscale, speaker ID, house mics, calendar file, Forge/Watch as “knows my body.”
+**Later (still movie, not first):** always-on home host, wake word, speaker ID, house mics, calendar file, Forge/Watch as “knows my body.” Phone already finds Talk over Tailscale (`svc:jarvis`); that is not a second brain.
 
 Read `HANDOFF.md` for machine-specific state. Do not treat the old receptionist/router/caps design as the product.

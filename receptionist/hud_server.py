@@ -16,6 +16,9 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from shutil import which
+
+TS_SERVICE = "svc:jarvis"
 
 HUD_DIR = Path(__file__).resolve().parent / "hud"
 CERT_DIR = Path(__file__).resolve().parent / "certs"
@@ -256,6 +259,83 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _tailscale_bin() -> str:
+    return which("tailscale") or ""
+
+
+def _run_ts(*args: str, timeout: int = 25) -> subprocess.CompletedProcess:
+    ts = _tailscale_bin()
+    if not ts:
+        raise FileNotFoundError("tailscale")
+    return subprocess.run(
+        [ts, *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def phone_url_from_dns(dns: str) -> str:
+    """MagicDNS of this node → https://jarvis.<tailnet>.ts.net/phone."""
+    host = (dns or "").strip().rstrip(".")
+    if "." not in host:
+        return ""
+    suffix = host.split(".", 1)[1]
+    if not suffix:
+        return ""
+    return f"https://jarvis.{suffix}/phone"
+
+
+def tailnet_phone_url() -> str:
+    ts = _tailscale_bin()
+    if not ts:
+        return ""
+    try:
+        proc = _run_ts("status", "--json", timeout=8)
+        data = json.loads(proc.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+        return ""
+    dns = str(((data.get("Self") or {}).get("DNSName")) or "")
+    return phone_url_from_dns(dns)
+
+
+def advertise_phone_door() -> str:
+    """This Talk process hosts svc:jarvis. Returns the stable phone URL."""
+    if not _tailscale_bin():
+        return ""
+    backend = f"https+insecure://127.0.0.1:{PORT}"
+    try:
+        proc = _run_ts(
+            "serve",
+            f"--service={TS_SERVICE}",
+            "--https=443",
+            backend,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[hud] tailscale serve failed ({exc})", flush=True)
+        return tailnet_phone_url()
+    text = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if proc.returncode != 0:
+        print(f"[hud] tailscale serve: {text[:400]}", flush=True)
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                print(f"[hud] {line}", flush=True)
+    return tailnet_phone_url()
+
+
+def drain_phone_door() -> None:
+    if not _tailscale_bin():
+        return
+    try:
+        _run_ts("serve", "drain", TS_SERVICE, timeout=15)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[hud] tailscale drain skipped ({exc})", flush=True)
+
+
 def _try_firewall(port: int) -> None:
     # Windows only: allow iPhone / LAN clients through the PC firewall.
     if sys.platform != "win32":
@@ -302,19 +382,27 @@ def start_hud(open_browser: bool = True) -> None:
     threading.Thread(target=_httpd.serve_forever, daemon=True).start()
     _try_firewall(PORT)
     local = f"{scheme}://127.0.0.1:{PORT}/"
+    phone = advertise_phone_door()
     print(f"[hud] PC:     {local}  (F fullscreen)", flush=True)
-    print("[hud] iPhone: join the PC's Wi-Fi hotspot, then Safari:", flush=True)
-    for ip in ips:
-        print(f"         {scheme}://{ip}:{PORT}/phone", flush=True)
-    print("[hud] Safari will warn about the certificate — tap Advanced, then Visit this website.", flush=True)
+    if phone:
+        print(f"[hud] iPhone: Tailscale on, then {phone}", flush=True)
+        print("[hud] Add to Home Screen once. That icon is Jarvis, not this PC.", flush=True)
+    else:
+        print("[hud] iPhone (same Wi-Fi, until Tailscale Serve is up):", flush=True)
+        for ip in ips:
+            print(f"         {scheme}://{ip}:{PORT}/phone", flush=True)
+        print(
+            "[hud] Safari will warn about the certificate — tap Advanced, then Visit this website.",
+            flush=True,
+        )
     print("[hud] Allow microphone when asked. Hold the gold button to talk.", flush=True)
-    print("[hud] Phone mic/speaker only work on the /phone page over https.", flush=True)
     if open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(local)).start()
 
 
 def stop_hud() -> None:
     global _httpd
+    drain_phone_door()
     if _httpd:
         _httpd.shutdown()
         _httpd = None

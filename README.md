@@ -17,7 +17,7 @@ This is **not** the Grok iOS app, **not** grok.com, and **not** Cursor. Talk is 
 - **Host workshop** — Talk spawns a worker that advertises `search`, `vault-write`, `distill`, `home`, `imagine`, `docs`, `forge`. A Grok **router** reads between the lines for anything that is not an obvious hello or a regex-fast house/search/remember. Mixed “draw this and write a PDF” can enqueue **two** jobs. Search uses `grok -p` with web tools. Imagine uses `image_gen` / `image_to_video`. Docs writes a markdown guide plus a PDF in `~/Documents/jarvis/YYYY-MM-DD/`. Stills land in `~/Pictures/jarvis/`; animations in `~/Videos/jarvis/`. Never this git repo, never `~/.grok/sessions`. The desk acks immediately and speaks again when a file is ready. The desk never gets those tools. House commands use the Home Assistant REST API on the LAN; the token stays in `~/.jarvis/secrets`. Unlocks, garage, and doors wait for a spoken **yes**. `forge` is a **read-only** look at the BearJacked Supabase training log (login in `~/.jarvis/secrets/forge.json`).
 - **Laptop `shell` workshop** — a **separate** worker on the machine that has this checkout. “Run the tests” runs `unittest` here. “Patch X” uses Grok Build tools on a `jarvis/workshop-*` branch. No merge, no push, no Talk restart — you gate that. The host workshop (HA token, Imagine) does not advertise `shell`.
 - **Latest line wins** — queued utterances are not answered FIFO. New speech **interrupts** the mouth. A workshop job already running is **not** cancelled; he just stops reading old answers aloud. “Stop talking” is hush, not a house command.
-- **iPhone** — Safari `https://<laptop-lan-ip>:8791/phone`. Hold the gold button. Whisper and Grok stay on the host; the phone is mic + speaker. Phone turns do not use the laptop speakers.
+- **iPhone** — Tailscale on, then Safari / Home Screen `https://jarvis.<tailnet>.ts.net/phone` (this house: `https://jarvis.tail9f6146.ts.net/phone`). Hold the gold button. Whisper and Grok stay on the Talk host; the phone is mic + speaker. Same icon if Talk moves to another tagged PC. Phone turns do not use the laptop speakers.
 - **Single instance** — starting Talk stops a previous Talk window so you do not get two voices.
 - **No extra Grok Voice bill** — Whisper is local; Thomas is Edge TTS; Grok is SuperGrok.
 
@@ -181,7 +181,7 @@ python -m unittest discover -s tests
 
 **The movie line:** you never talk to a receptionist, and you never wait while he thinks in another room. You talk to Jarvis; some of him is busy; he can still answer. A single `grok agent` cannot chat and code at once, so the mouth is one process and the hands are others, with one persona and a shared brief. SuperGrok Heavy, Grok Build, and Imagine are in; wrapping Cursor or grok.com as a nested bot is out.
 
-Standing test for every change: **does this move us toward a JARVIS-like system from the movies?** Accessories (Watch, Tailscale, Pi, extra caps) wait until that line is true.
+Standing test for every change: **does this move us toward a JARVIS-like system from the movies?** Accessories (Watch, Pi, extra caps) wait until that line is true. The phone already reaches Talk over Tailscale (`svc:jarvis`); that is one presence, not a second brain.
 
 Tony’s JARVIS is one process with many endpoints (suit, phone, lab, house). That *is* doable. The dumb version was parking that process on the **office** Jetson while Home Assistant, the family, and the future room mics are at **home**. Always-on lives **at home**, next to the house.
 
@@ -251,7 +251,7 @@ V1 is push-to-talk and the phone HUD. Always-listening is a *later house feature
 
 1. Keep the **mouth** free and snappy (no long tools on the talking session). Hands are other Grok processes with the full suite. One persona, shared brief.
 2. Markdown vault + git + **distill** — boot bundle, session jsonl, daily stub, job board, host workshop (search / vault-write / distill / home / imagine / docs / forge) and laptop `shell` worker are in. On-demand vault reads are next.
-3. Phone HUD over LAN (works). Tailscale for off-LAN is next.
+3. Phone HUD: Tailscale Serve `svc:jarvis` (stable `https://jarvis.<tailnet>.ts.net/phone`). LAN IP is fallback only.
 4. **HA on the LAN** — host workshop `home` cap talks to `homeassistant.local:8123`. Token in `~/.jarvis/secrets/ha.token`. Confirm unlocks/garage/doors out loud. A Pi-side proxy (token never leaves home) is what the office needs later; not required on this laptop.
 5. **Always-on Talk at home** (Pi 5, or move the Orin). Host workshop already runs next to Talk; keep it there.
 6. Workshop agents: home laptop, then office PC.
@@ -268,15 +268,15 @@ The iPhone **cannot** run `grok.exe` or CUDA Whisper. “Jarvis in my pocket” 
 2. **Official Grok iOS app** — not this Jarvis (no HUD, no vault, no front-desk/workshop split).  
 3. **Native app + xAI Voice API** — possible later, extra bill, still not Grok Build-on-disk unless a workshop is signed in on the machine that has the files.
 
-### iPhone on the same Wi‑Fi (works now)
+### iPhone over Tailscale (the door)
 
-Talk prints several URLs. Use the laptop’s **real LAN address**, not the hotspot templates unless you started a hotspot. On this XPS that is usually `https://192.168.0.24:8791/phone`. Same SSID as the laptop. `127.0.0.1` is the PC browser only.
+One icon, any network the phone can reach Tailscale on (home Wi‑Fi, cellular, office). Not a LAN IP. Not Funnel (not on the public internet). Personal plan is free. Voice is device-to-device; Tailscale’s cloud is only how the phone finds the Talk host.
 
-Safari will warn about the self-signed certificate: **Advanced → Visit this website**. Allow the microphone. Hold the gold button until **Release to send**, speak, release. Reply audio plays **on the phone**; that turn does not use the laptop speakers.
+**Phone, once:** Tailscale app, same account as the Talk PC, VPN left on. Safari **`https://jarvis.tail9f6146.ts.net/phone`** → allow mic → Add to Home Screen. After that, tap the icon. Hold the gold button until **Release to send**. Reply plays on the phone.
 
-The PC must be running Talk. Whisper and Grok still run on the PC.
+**PC that runs Talk:** see `HANDOFF.md` (install Tailscale, tag `tag:jarvis`, one Talk, Approve the service host if asked). Talk advertises `svc:jarvis` while it is up. Stop Talk on the previous host first.
 
-A Windows or Ubuntu **hotspot** still works if you actually enable it (`192.168.137.1` / `10.42.0.1`). Off-LAN needs Tailscale later.
+`127.0.0.1:8791` is the PC browser only. Same-LAN `https://<ip>:8791/phone` still works if Tailscale is down (Safari cert warning). The Home Screen icon is the `jarvis.…ts.net` URL.
 
 ## Single-board computers
 

@@ -5,4 +5,4 @@ Voice loop + HUD for Jarvis. The talking Grok session stays free so the mouth ne
 Windows: `talk.cmd`  
 Ubuntu: `./talk.sh`
 
-Option **3** is the daily path: Home key, Whisper, grok-4.6, Thomas neural voice, three.js HUD (`https://127.0.0.1:8791/`, **F** fullscreen). iPhone: the **LAN** `https://…:8791/phone` URL Talk prints (not `127.0.0.1`).
+Option **3** is the daily path: Home key, Whisper, grok-4.6, Thomas neural voice, three.js HUD (`https://127.0.0.1:8791/`, **F** fullscreen). iPhone: Tailscale on, then **`https://jarvis.tail9f6146.ts.net/phone`** (Talk advertises `svc:jarvis`; not `127.0.0.1`, not a LAN IP). How to put Talk on another PC: **[HANDOFF.md](../HANDOFF.md)**.
