@@ -29,6 +29,8 @@ SPEECH_RULES = (
     "caps: shell, search, imagine, docs, forge, diagnose, vault-write. "
     "State the goal, not a procedure. Do not emit [hands:] for a question "
     "the notes already answer. "
+    "If they thank you, acknowledge a reminder, or say they are already "
+    "doing the work, answer that — do not emit [hands:]. "
     "Do not claim the work finished in the spoken lines; the other thread does it. "
     "Do not explain the harness, the brief, or how to start a job. "
     "You cannot see cameras. Do not volunteer STT/TTS debugging. "

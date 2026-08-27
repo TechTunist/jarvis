@@ -100,6 +100,19 @@ class WorkingMemoryTests(unittest.TestCase):
         self.assertIn("[last jobs]", pre)
         self.assertIn("Thirteen deals", pre)
 
+    def test_pack_recent_keeps_jarvis_initiated_lines(self) -> None:
+        log = SessionLog.start(self.home)
+        log.record("[reminder]", "It's time, sir. Check Jarvis codebase.")
+        log.record(
+            "im working on the codebase now jarvis, thanks or the reminder",
+            "I'll leave you to it, sir.",
+        )
+        packed = pack_recent(self.home)
+        self.assertIn("It's time, sir. Check Jarvis codebase.", packed)
+        self.assertNotIn("You: [reminder]", packed)
+        self.assertIn("You: im working on the codebase now", packed)
+        self.assertIn("Jarvis: I'll leave you to it, sir.", packed)
+
 
 if __name__ == "__main__":
     unittest.main()

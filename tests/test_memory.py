@@ -84,9 +84,9 @@ class PromptTests(unittest.TestCase):
         prompt = build_system_prompt(huge, budget=500)
         self.assertTrue(prompt.startswith(SPEECH_RULES[:40]))
         self.assertNotIn("workbench is not connected yet", SPEECH_RULES)
-        self.assertIn("Never say you switched a light", SPEECH_RULES)
+        self.assertIn("do not emit [hands:]", SPEECH_RULES.lower())
+        self.assertIn("already doing the work", SPEECH_RULES)
         self.assertNotIn("Do not discuss microphones", SPEECH_RULES)
-        self.assertIn("House-wide wireless mics", SPEECH_RULES)
         extra = prompt[len(SPEECH_RULES) :]
         self.assertLessEqual(len(extra), 500 + 80)
         self.assertIn("Notes", prompt)

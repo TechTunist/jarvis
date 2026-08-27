@@ -20,6 +20,7 @@ from memory.intent import (
     STATUS,
     classify,
     file_line,
+    is_reply_not_request,
     maybe_enqueue,
     remember_dest,
     resolve_intent,
@@ -174,6 +175,27 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(rotating.ack, ANIMATE.ack)
         self.assertEqual(rotating.wait_s, 0.0)
         self.assertEqual(classify("Imagine a golden sunset").wait_s, 0.0)
+
+    def test_reply_to_jarvis_is_not_a_job(self) -> None:
+        uttered = "im working on the codebase now jarvis, thanks or the reminder"
+        self.assertTrue(is_reply_not_request(uttered))
+        self.assertEqual(resolve_intent(uttered).kind, CHAT.kind)
+        self.assertTrue(
+            is_reply_not_request("thanks for the bitcoin price, that was useful")
+        )
+        self.assertEqual(
+            resolve_intent("thanks for the bitcoin price, that was useful").kind,
+            CHAT.kind,
+        )
+        self.assertFalse(is_reply_not_request("Run the tests in this repo"))
+        self.assertEqual(resolve_intent("Run the tests in this repo").cap, CODE.cap)
+        self.assertFalse(is_reply_not_request("thanks, look up the bitcoin price"))
+        self.assertEqual(
+            resolve_intent("thanks, look up the bitcoin price").cap, SEARCH.cap
+        )
+        self.assertEqual(
+            resolve_intent("thanks, turn on the kitchen lights").cap, HOME.cap
+        )
 
     def test_code_is_conservative(self) -> None:
         self.assertEqual(classify("Run the tests in this repo").cap, CODE.cap)

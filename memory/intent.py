@@ -345,6 +345,48 @@ _SEARCH = re.compile(
     re.I,
 )
 
+# Matt is speaking, not asking Jarvis to act. Topic words must not steal this.
+_THANKS = re.compile(
+    r"\b(?:thanks|thank you|cheers|got it|will do|understood)\b",
+    re.I,
+)
+_USER_AGENT = re.compile(
+    r"\b(?:I(?:'m| am|'ll| will|'ve| have been)|I\s+am|im)\b",
+    re.I,
+)
+_ASKING = re.compile(
+    r"(?:"
+    r"\b(?:can|could|would|will)\s+you\b"
+    r"|\bI (?:need|want) you\b"
+    r"|\?"
+    r"|(?:^|[\s,;:])(?:what|who|where|when|how|why|which)\b"
+    r")",
+    re.I,
+)
+_ASK_HIM_TO = re.compile(
+    r"(?:"
+    r"\b(?:run\s+(?:the\s+)?tests?|pytest|git\s+commit|pull\s+request)\b"
+    r"|\b(?:go\s+)?(?:implement|patch)\b"
+    r"|\bfix\s+(?:the\s+)?(?:bug|tests?|code|repo)\b"
+    r"|\b(?:look(?:ing)?\s+up|look\s+it\s+up|search\s+for|google)\b"
+    r"|\b(?:generate|create|make|draw|paint|render|imagine)\b"
+    r"|\b(?:write|draft)\s+(?:me\s+|a\s+)?(?:guide|spec|document|pdf)\b"
+    r")",
+    re.I,
+)
+
+
+def is_reply_not_request(text: str) -> bool:
+    """Thanks or first-person progress — conversation, not a hands job."""
+    raw = " ".join((text or "").split())
+    if not raw:
+        return False
+    if not (_THANKS.search(raw) or _USER_AGENT.search(raw)):
+        return False
+    if _ASKING.search(raw) or _ASK_HIM_TO.search(raw):
+        return False
+    return True
+
 
 _HOME_QUERY = re.compile(
     r"\b(?:what(?:'s|s| is| are)?|which|how many|list|do we have)\b"
@@ -373,6 +415,8 @@ def classify(text: str) -> Intent:
         return HOME
     if _STATUS.search(raw):
         return STATUS
+    if is_reply_not_request(raw):
+        return CHAT
     if _IMAGINE.search(raw):
         return ANIMATE if wants_animation(raw) else IMAGINE
     if _SEE.search(raw):
@@ -433,6 +477,8 @@ def resolve_intents(
         return [fast]
     if fast.kind == "diagnose":
         return [fast]
+    if is_reply_not_request(raw):
+        return [CHAT]
     found: list[Intent] = []
     if _IMAGINE.search(raw):
         found.append(ANIMATE if wants_animation(raw) else IMAGINE)

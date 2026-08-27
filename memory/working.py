@@ -68,11 +68,15 @@ def recent_turns(
         if ev.get("event") != "turn":
             continue
         user = spoken_user(str(ev.get("user") or ""))
-        if not user or user.startswith("[job ") or user.startswith("[reminder]"):
-            continue
         reply = " ".join(str(ev.get("reply") or "").split())
-        if user:
-            current.append((user[:clip], reply[:clip]))
+        # Jarvis-initiated lines (reminders, job results) are still what he said.
+        if (user or "").startswith("[job ") or (user or "").startswith("[reminder]"):
+            if reply:
+                current.append(("", reply[:clip]))
+            continue
+        if not user:
+            continue
+        current.append((user[:clip], reply[:clip]))
     return current[-limit:]
 
 
@@ -81,7 +85,8 @@ def pack_recent(
 ) -> str:
     rows = []
     for user, reply in recent_turns(home, limit=limit, clip=clip, span=span):
-        rows.append(f"You: {user}")
+        if user:
+            rows.append(f"You: {user}")
         if reply:
             rows.append(f"Jarvis: {reply}")
     return "\n".join(rows)
