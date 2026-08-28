@@ -14,8 +14,18 @@ from bench.bench import Handler, add_board, delete_part, find_part, set_upright
 from memory.bench import apply, parse_board, wants_delete, wants_orient
 from memory.home import JarvisHome
 
+ROOT = Path(__file__).resolve().parent.parent
+
 
 class ParseBoardTests(unittest.TestCase):
+    def test_axes_are_labelled(self) -> None:
+        js = (ROOT / "bench" / "bench.js").read_text(encoding="utf-8")
+        html = (ROOT / "bench" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('axisLabel("X"', js)
+        self.assertIn('axisLabel("Y"', js)
+        self.assertIn('axisLabel("Z"', js)
+        self.assertIn("Z up", html)
+
     def test_x_and_by(self) -> None:
         self.assertEqual(parse_board("1600x70x15mm"), (1600.0, 70.0, 15.0))
         self.assertEqual(

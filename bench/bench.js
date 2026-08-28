@@ -17,6 +17,47 @@ scene.add(sun);
 const grid = new THREE.GridHelper(4000, 40, 0x6a5030, 0x3a2a18);
 scene.add(grid);
 
+function axisLabel(text, color) {
+  const c = document.createElement("canvas");
+  c.width = 160;
+  c.height = 160;
+  const g = c.getContext("2d");
+  g.fillStyle = color;
+  g.font = "bold 112px sans-serif";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText(text, 80, 80);
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false })
+  );
+  sprite.scale.set(140, 140, 1);
+  return sprite;
+}
+
+function addAxes(len = 600) {
+  // Scene JSON: x along, y across, z up → three.js x, z, y.
+  const root = new THREE.Group();
+  const line = (to, color) => {
+    const geom = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      to,
+    ]);
+    return new THREE.Line(geom, new THREE.LineBasicMaterial({ color }));
+  };
+  root.add(line(new THREE.Vector3(len, 0, 0), 0xff5555));
+  root.add(line(new THREE.Vector3(0, 0, len), 0x44cc55));
+  root.add(line(new THREE.Vector3(0, len, 0), 0x5599ff));
+  const x = axisLabel("X", "#ff6666");
+  x.position.set(len + 90, 50, 0);
+  const y = axisLabel("Y", "#55dd66");
+  y.position.set(0, 50, len + 90);
+  const z = axisLabel("Z", "#77aaff");
+  z.position.set(50, len + 90, 0);
+  root.add(x, y, z);
+  scene.add(root);
+}
+addAxes();
+
 const group = new THREE.Group();
 scene.add(group);
 
