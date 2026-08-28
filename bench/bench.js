@@ -57,20 +57,25 @@ function rebuild() {
     const W = p.width_mm || 40;
     const T = p.thickness_mm || 15;
     const up = !!p.upright;
-    const geom = up
-      ? new THREE.BoxGeometry(T, L, W)
-      : new THREE.BoxGeometry(L, T, W);
-    const mesh = new THREE.Mesh(geom, wood);
-    mesh.position.set(
-      (p.x_mm || 0) + (up ? T : L) / 2,
-      (p.z_mm || 0) + (up ? L : T) / 2,
-      (p.y_mm || 0) + W / 2
+    const sx = up ? T : L;
+    const sy = up ? L : T;
+    const sz = W;
+    const geom = new THREE.BoxGeometry(sx, sy, sz);
+    const holder = new THREE.Group();
+    holder.position.set(p.x_mm || 0, p.z_mm || 0, p.y_mm || 0);
+    holder.rotation.set(
+      THREE.MathUtils.degToRad(p.rx_deg || 0),
+      THREE.MathUtils.degToRad(p.ry_deg || 0),
+      THREE.MathUtils.degToRad(p.rz_deg || 0)
     );
-    group.add(mesh);
+    const mesh = new THREE.Mesh(geom, wood);
+    mesh.position.set(sx / 2, sy / 2, sz / 2);
+    holder.add(mesh);
     const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom), woodEdge);
     edges.position.copy(mesh.position);
-    group.add(edges);
-    maxL = Math.max(maxL, L, 400);
+    holder.add(edges);
+    group.add(holder);
+    maxL = Math.max(maxL, L + (p.x_mm || 0), 400);
   }
   target.x = maxL / 2;
   dist = Math.max(900, maxL * 1.2);
@@ -78,7 +83,7 @@ function rebuild() {
     ? parts
         .map(
           (p) =>
-            `<div class="part"><strong>${p.name || p.kind}</strong><div class="dim">${p.length_mm} × ${p.width_mm} × ${p.thickness_mm} mm · ${p.upright ? "vertical" : "flat"}</div></div>`
+            `<div class="part"><strong>${p.name || p.kind}</strong><div class="dim">${p.length_mm} × ${p.width_mm} × ${p.thickness_mm} mm · ${p.upright ? "vertical" : "flat"} @ ${p.x_mm || 0}, ${p.y_mm || 0}, ${p.z_mm || 0}</div></div>`
         )
         .join("")
     : "Empty.";

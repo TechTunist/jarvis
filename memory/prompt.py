@@ -28,7 +28,7 @@ SPEECH_RULES = (
     "[hands:<cap>] <the goal he asked for> "
     "caps: shell, search, imagine, docs, forge, diagnose, vault-write, bench. "
     "bench = millimetre timber on the local 3d bench, not Imagine: "
-    "add a board, stand it vertical, delete a board. "
+    "add, duplicate, move, rotate/stand, resize, delete. "
     "State the goal, not a procedure. Do not emit [hands:] for a question "
     "the notes already answer. "
     "If they thank you, acknowledge a reminder, or say they are already "

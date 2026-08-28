@@ -98,7 +98,7 @@ class BenchHttpTests(unittest.TestCase):
                 self.home, "stand the 1600 x 70 x 15 mm plate vertical on port 8770"
             )
         self.assertEqual(result, "ok")
-        self.assertIn("standing", speak.lower())
+        self.assertTrue("vertical" in speak.lower() or "standing" in speak.lower())
         scene = self._get("api/scene")
         self.assertEqual(len(scene["parts"]), 1)
         self.assertTrue(scene["parts"][0]["upright"])
@@ -140,6 +140,47 @@ class BenchHttpTests(unittest.TestCase):
         self.assertTrue(p2["upright"])
         delete_part(scene, p2)
         self.assertEqual(len(scene["parts"]), 1)
+
+    def test_duplicate_offset_and_length_on_top(self) -> None:
+        import memory.bench as mb
+        from memory.bench import parse_ops
+
+        self._post(
+            "api/parts",
+            {
+                "kind": "board",
+                "length_mm": 1600,
+                "width_mm": 70,
+                "thickness_mm": 15,
+                "upright": True,
+            },
+        )
+        scene = self._get("api/scene")
+        ops = parse_ops("duplicate board 1 offset 900mm centres from the first board", scene)
+        self.assertEqual(ops[0]["op"], "duplicate")
+        self.assertEqual(ops[0]["dy_mm"], 900.0)
+        ops = parse_ops(
+            "add a second board 1300mm long, horizontal, starting at the top of board 1",
+            scene,
+        )
+        self.assertEqual(ops[0]["op"], "add")
+        self.assertEqual(ops[0]["length_mm"], 1300.0)
+        self.assertEqual(ops[0]["z_mm"], 1600.0)
+        self.assertFalse(ops[0]["upright"])
+        with (
+            patch.object(mb, "URL", self.base),
+            patch.object(mb, "ensure_server", return_value=False),
+            patch.object(mb, "open_ui") as opened,
+        ):
+            speak, result = apply(
+                self.home, "add board 2, same dimensions as board 1, offset 900mm"
+            )
+        self.assertEqual(result, "ok")
+        opened.assert_not_called()
+        scene = self._get("api/scene")
+        self.assertEqual(len(scene["parts"]), 2)
+        self.assertEqual(scene["parts"][1]["y_mm"], 900.0)
+        self.assertIn("duplicated", speak.lower())
 
 
 if __name__ == "__main__":

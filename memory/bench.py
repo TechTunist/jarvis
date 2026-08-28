@@ -1,4 +1,4 @@
-"""Timber bench: millimetre boards Jarvis can place, stand, and delete."""
+"""Timber bench: millimetre boards Jarvis can add, move, rotate, duplicate, delete."""
 from __future__ import annotations
 
 import json
@@ -9,13 +9,14 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 
 from memory.home import JarvisHome
 
 PORT = 8770
 URL = f"http://127.0.0.1:{PORT}/"
-API = 2
+API = 3
 _DIMS = re.compile(
     r"(\d+(?:\.\d+)?)\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*"
     r"(\d+(?:\.\d+)?)\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*"
@@ -28,31 +29,44 @@ _DIMS_BY = re.compile(
     r"(\d+(?:\.\d+)?)\s*(?:mm|millimet(?:er|re)s?)?\b",
     re.I,
 )
-_NEW = re.compile(
-    r"\b(?:add|create|make me|another|new)\b",
+_LONG = re.compile(
+    r"(\d+(?:\.\d+)?)\s*(?:mm|millimet(?:er|re)s?)?\s+"
+    r"(?:long|length|instead of)"
+    r"|\blength\s+(?:of\s+)?(\d+(?:\.\d+)?)\s*(?:mm|millimet(?:er|re)s?)?",
     re.I,
 )
+_OFFSET = re.compile(
+    r"\boffset\s+(?:of\s+|at\s+|by\s+)?(\d+(?:\.\d+)?)\s*(?:mm)?"
+    r"|\b(\d+(?:\.\d+)?)\s*mm\s*(?:offset|centres?|centers?)\b"
+    r"|\b(\d+(?:\.\d+)?)\s*(?:centres?|centers?)\b",
+    re.I,
+)
+_NEW = re.compile(r"\b(?:add|create|make me|another|new|second)\b", re.I)
 _ORIENT = re.compile(
     r"\b(?:stand(?:ing)?|stood|upright|vertical|on end|orient(?:ed|ation)?)\b",
     re.I,
 )
-_DELETE = re.compile(
-    r"\b(?:delete|remove|drop|get rid of|clear)\b",
-    re.I,
-)
-_BOARD_N = re.compile(
-    r"\b(?:board|part|plate|model)\s*(\d+)\b",
-    re.I,
-)
+_FLAT = re.compile(r"\b(?:horizontal|flat|lying|laying)\b", re.I)
+_DELETE = re.compile(r"\b(?:delete|remove|drop|get rid of|clear)\b", re.I)
+_DUP = re.compile(r"\b(?:duplicate|copy|clone|same dimensions|same size|same as)\b", re.I)
+_BOARD_N = re.compile(r"\b(?:board|part|plate|model)\s*(\d+)\b", re.I)
 _DEL_N = re.compile(
     r"\b(?:delete|remove|drop|get rid of)\s+(?:the\s+)?(?:board|part|plate|model)\s*(\d+)\b",
     re.I,
 )
-_ORIENT_N = re.compile(
-    r"\b(?:board|part|plate|model)\s*(\d+)\b.{0,40}\b(?:vertical|upright|stand|end|orient)",
-    re.I,
-)
 _BENCH_PY = Path(__file__).resolve().parent.parent / "bench" / "bench.py"
+OPS_SYSTEM = (
+    "You drive a millimetre 3d timber bench. JSON only: "
+    '{"ops":[{"op":"add|duplicate|move|rotate|resize|delete|clear", ...}]}. '
+    "Y across the plan is y_mm; z_mm is up; x_mm is along. "
+    "add: length_mm, optional width_mm, thickness_mm, x_mm,y_mm,z_mm, upright. "
+    "duplicate: n, optional dx_mm,dy_mm,dz_mm. 900 centres = dy_mm 900. "
+    "move: n plus x_mm/y_mm/z_mm or dx_mm/dy_mm/dz_mm. "
+    "rotate: n, upright true|false. "
+    "resize: n, length_mm and/or width_mm and/or thickness_mm. "
+    "delete: n. Horizontal on top of an upright board: z_mm = that board's length. "
+    "Do not no-op. No markdown."
+)
 
 
 def parse_board(text: str) -> tuple[float, float, float] | None:
@@ -61,6 +75,26 @@ def parse_board(text: str) -> tuple[float, float, float] | None:
     if not hit:
         return None
     return float(hit.group(1)), float(hit.group(2)), float(hit.group(3))
+
+
+def parse_length(text: str) -> float | None:
+    hit = _LONG.search(text or "")
+    if not hit:
+        return None
+    for g in hit.groups():
+        if g:
+            return float(g)
+    return None
+
+
+def parse_offset(text: str) -> float | None:
+    hit = _OFFSET.search(text or "")
+    if not hit:
+        return None
+    for g in hit.groups():
+        if g:
+            return float(g)
+    return None
 
 
 def wants_orient(text: str) -> bool:
@@ -85,7 +119,7 @@ def _get(path: str, timeout: float = 0.6) -> dict | None:
         return None
 
 
-def _post(path: str, payload: dict, timeout: float = 2.0) -> dict:
+def _post(path: str, payload: dict, timeout: float = 4.0) -> dict:
     raw = json.dumps(payload).encode()
     req = urllib.request.Request(
         path,
@@ -124,8 +158,9 @@ def healthy() -> bool:
 
 
 def ensure_server(home: JarvisHome) -> bool:
+    """True if a new process was started."""
     if api_ok():
-        return True
+        return False
     if healthy():
         _stop_listener()
     if not _BENCH_PY.is_file():
@@ -150,75 +185,152 @@ def open_ui() -> None:
         pass
 
 
-def apply(home: JarvisHome, asked: str) -> tuple[str, str]:
-    """Add, stand, or delete boards from the utterance."""
+def _board_n(text: str, default: int | None = None) -> int | None:
+    found = [int(x) for x in _BOARD_N.findall(text or "")]
+    if found:
+        return found[0]
+    return default
+
+
+def parse_ops(asked: str, scene: dict) -> list[dict]:
+    """Deterministic CAD ops. Empty means ask the hands model or report the scene."""
     raw = " ".join((asked or "").split())
-    if not ensure_server(home):
+    parts = list(scene.get("parts") or [])
+    ops: list[dict] = []
+    if re.search(r"\bclear(?:\s+the)?\s+bench\b|\bempty the bench\b", raw, re.I):
+        return [{"op": "clear"}]
+    if wants_delete(raw):
+        hit = _DEL_N.search(raw)
+        n = int(hit.group(1)) if hit else _board_n(raw)
+        ops.append({"op": "delete", "n": n} if n else {"op": "delete"})
+    if wants_orient(raw) and not _FLAT.search(raw):
+        n = None
+        hit = re.search(
+            r"\b(?:board|part|plate)\s*(\d+)\b.{0,40}\b(?:vertical|upright|stand|end|orient)",
+            raw,
+            re.I,
+        )
+        if hit:
+            n = int(hit.group(1))
+        else:
+            hit = re.search(
+                r"\b(?:make|stand|orient)\s+(?:the\s+)?(?:board|part|plate)\s*(\d+)\b",
+                raw,
+                re.I,
+            )
+            n = int(hit.group(1)) if hit else _board_n(raw)
+        op = {"op": "rotate", "upright": True}
+        if n:
+            op["n"] = n
+        ops.append(op)
+    offset = parse_offset(raw)
+    if _DUP.search(raw) or (offset is not None and parts and not parse_board(raw)):
+        n = _board_n(raw, 1 if parts else None)
+        op = {"op": "duplicate", "n": n or 1, "dy_mm": offset or 0.0}
+        ops.append(op)
+        return ops
+    dims = parse_board(raw)
+    length = parse_length(raw)
+    src = parts[0] if parts else None
+    if src and re.search(r"\bboard\s*1\b", raw, re.I):
+        src = next((p for p in parts if str(p.get("name") or "").endswith(" 1") or p.get("id") == "p1"), src)
+    if dims and (wants_new(raw) or not ops):
+        op = {
+            "op": "add",
+            "length_mm": dims[0],
+            "width_mm": dims[1],
+            "thickness_mm": dims[2],
+            "upright": wants_orient(raw) and not _FLAT.search(raw),
+        }
+        ops.append(op)
+        return ops
+    if length is not None and (wants_new(raw) or src):
+        w = float((src or {}).get("width_mm") or 70)
+        t = float((src or {}).get("thickness_mm") or 15)
+        op = {
+            "op": "add",
+            "length_mm": length,
+            "width_mm": w,
+            "thickness_mm": t,
+            "upright": wants_orient(raw) and not _FLAT.search(raw),
+        }
+        if src and re.search(r"\btop of\b", raw, re.I):
+            up = bool(src.get("upright"))
+            height = float(src.get("length_mm") if up else src.get("thickness_mm") or 0)
+            op["x_mm"] = float(src.get("x_mm") or 0)
+            op["y_mm"] = float(src.get("y_mm") or 0)
+            op["z_mm"] = float(src.get("z_mm") or 0) + height
+            op["upright"] = False
+        ops.append(op)
+        return ops
+    return ops
+
+
+def _plan_with_model(
+    asked: str,
+    scene: dict,
+    complete: Callable[..., str],
+) -> list[dict]:
+    from memory.grokrun import extract_json
+
+    prompt = (
+        "Scene (millimetres):\n"
+        + json.dumps(scene.get("parts") or [], indent=2)
+        + "\n\nMatt asked: "
+        + asked
+        + "\nReturn ops that change the scene."
+    )
+    raw = complete(
+        prompt,
+        system=OPS_SYSTEM,
+        web=False,
+        max_turns=1,
+        tools="",
+        effort="low",
+    )
+    data = extract_json(raw or "") or {}
+    ops = data.get("ops")
+    return ops if isinstance(ops, list) else []
+
+
+def apply(
+    home: JarvisHome,
+    asked: str,
+    complete: Callable[..., str] | None = None,
+) -> tuple[str, str]:
+    raw = " ".join((asked or "").split())
+    started = ensure_server(home)
+    if not api_ok():
         return "I haven't got the bench running, sir.", "down"
-    bits: list[str] = []
-    try:
-        if wants_delete(raw):
-            n = None
-            hit = _DEL_N.search(raw)
-            if hit:
-                n = int(hit.group(1))
-            else:
-                found = _BOARD_N.findall(raw)
-                if found and not wants_orient(raw):
-                    n = int(found[0])
-                elif len(found) >= 2:
-                    n = int(found[1]) if "board 2" in raw.lower() or "board two" in raw.lower() else int(found[-1])
-            body = {"n": n} if n is not None else {}
-            out = _post(f"{URL}api/delete", body)
-            bits.append(f"removed {out.get('deleted') or 'a board'}")
-        if wants_orient(raw):
-            n = None
-            hit = _ORIENT_N.search(raw)
-            if hit:
-                n = int(hit.group(1))
-            else:
-                hit = re.search(
-                    r"\b(?:make|stand|orient)\s+(?:the\s+)?(?:board|part|plate)\s*(\d+)\b",
-                    raw,
-                    re.I,
-                )
-                if hit:
-                    n = int(hit.group(1))
-                elif re.search(r"\bboard\s*1\b", raw, re.I):
-                    n = 1
-            dims = parse_board(raw)
-            adding = bool(dims) and wants_new(raw)
-            if not adding:
-                body: dict = {"upright": True}
-                if n is not None:
-                    body["n"] = n
-                out = _post(f"{URL}api/orient", body)
-                name = (out.get("part") or {}).get("name") or "the board"
-                bits.append(f"{name} standing on end")
-        dims = parse_board(raw)
-        mutate = wants_delete(raw) or wants_orient(raw)
-        if dims and (wants_new(raw) or not mutate):
-            length_mm, width_mm, thickness_mm = dims
-            _post(
-                f"{URL}api/parts",
-                {
-                    "kind": "board",
-                    "length_mm": length_mm,
-                    "width_mm": width_mm,
-                    "thickness_mm": thickness_mm,
-                    "upright": wants_orient(raw) and wants_new(raw),
-                },
-            )
-            how = "vertical " if wants_orient(raw) and wants_new(raw) else ""
-            bits.append(
-                f"{how}{length_mm:g} by {width_mm:g} by {thickness_mm:g} millimetres"
-            )
-    except Exception as exc:
-        return f"The bench failed, sir. {exc}", "error"
-    open_ui()
-    if not bits:
+    scene = _get(f"{URL}api/scene") or {"parts": []}
+    ops = parse_ops(raw, scene)
+    if not ops and complete is not None and re.search(
+        r"\b(?:add|create|delete|stand|duplicate|copy|offset|move|rotate|resize|"
+        r"place|contact|top|horizontal|vertical|board)\b",
+        raw,
+        re.I,
+    ):
+        try:
+            ops = _plan_with_model(raw, scene, complete)
+        except Exception:
+            ops = []
+    if not ops:
+        names = ", ".join(str(p.get("name") or p.get("id")) for p in (scene.get("parts") or []))
+        if started:
+            open_ui()
+        if names:
+            return f"On the bench: {names}, sir. Say add, duplicate, move, rotate, or delete.", "idle"
         return (
-            "The bench is open, sir. I can add a board, stand one on end, or delete one.",
+            "The bench is empty, sir. Give a board size, or duplicate one that is there.",
             "need-dims",
         )
-    return "On the bench, sir. " + "; ".join(bits) + ".", "ok"
+    try:
+        out = _post(f"{URL}api/ops", {"ops": ops})
+    except Exception as exc:
+        return f"The bench failed, sir. {exc}", "error"
+    if started:
+        open_ui()
+    notes = out.get("notes") or []
+    if not notes:
+        return "On the bench, sir.", "ok"
+    return "On the bench, sir. " + "; ".join(str(n) for n in notes) + ".", "ok"

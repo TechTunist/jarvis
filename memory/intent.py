@@ -255,6 +255,8 @@ _BENCH_MUTATE = re.compile(
     r"|\bon end\b|\bupright\b"
     r"|\b(?:make|stand|orient).{0,40}\bvertical\b"
     r"|\bvertical\b.{0,40}\b(?:board|plate|end|bench)"
+    r"|\b(?:duplicate|copy|clone|offset|centres?|centers?)\b"
+    r"|\b(?:move|resize|rotate)\b.{0,40}\b(?:board|part|plate|bench)"
     r")",
     re.I,
 )

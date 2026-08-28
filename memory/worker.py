@@ -383,7 +383,11 @@ class HostWorker:
     def _bench(self, snap: dict) -> tuple[str, str]:
         from memory.bench import apply
 
-        return apply(self.home, str(snap.get("prompt") or ""))
+        return apply(
+            self.home,
+            str(snap.get("prompt") or ""),
+            complete=self.complete or self._ask,
+        )
 
     def _forge(self, snap: dict) -> tuple[str, str]:
         from memory.forge import fetch_brief, load_secrets
