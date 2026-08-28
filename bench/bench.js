@@ -14,8 +14,15 @@ const sun = new THREE.DirectionalLight(0xffe6c0, 1.1);
 sun.position.set(800, 1400, 600);
 scene.add(sun);
 
-const grid = new THREE.GridHelper(4000, 40, 0x6a5030, 0x3a2a18);
+const GRID_MM = 4000;
+const GRID_DIVS = 40;
+const GRID_CELL_MM = GRID_MM / GRID_DIVS;
+const grid = new THREE.GridHelper(GRID_MM, GRID_DIVS, 0x6a5030, 0x3a2a18);
 scene.add(grid);
+const cellEl = document.getElementById("grid-cell");
+const spanEl = document.getElementById("grid-span");
+if (cellEl) cellEl.textContent = GRID_CELL_MM + " mm";
+if (spanEl) spanEl.textContent = GRID_MM + " mm";
 
 function axisLabel(text, color) {
   const c = document.createElement("canvas");

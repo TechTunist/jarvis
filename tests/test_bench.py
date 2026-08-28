@@ -25,6 +25,9 @@ class ParseBoardTests(unittest.TestCase):
         self.assertIn('axisLabel("Y"', js)
         self.assertIn('axisLabel("Z"', js)
         self.assertIn("Z up", html)
+        self.assertIn('id="world"', html)
+        self.assertIn("Grid square", html)
+        self.assertIn("GRID_CELL_MM", js)
 
     def test_x_and_by(self) -> None:
         self.assertEqual(parse_board("1600x70x15mm"), (1600.0, 70.0, 15.0))

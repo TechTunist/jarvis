@@ -19,6 +19,19 @@
     #panel p { margin: 0 0 10px; opacity: 0.8; }
     .part { margin: 0 0 8px; padding: 6px 0; border-top: 1px solid #3a2a18; }
     .dim { color: #c4a56a; font-variant-numeric: tabular-nums; }
+    #world {
+      position: fixed; top: 12px; right: 12px; z-index: 2;
+      width: 220px;
+      background: rgba(18, 12, 8, 0.88); color: #e8d5b0;
+      font: 13px/1.45 -apple-system, system-ui, sans-serif;
+      padding: 12px 14px; border-radius: 10px;
+      border: 1px solid #8a6a3a;
+      text-align: right;
+    }
+    #world h1 { margin: 0 0 8px; font-size: 15px; letter-spacing: 0.08em; color: #f0c060; }
+    #world .row { display: flex; justify-content: space-between; gap: 12px; }
+    #world .k { opacity: 0.75; }
+    #world .v { color: #c4a56a; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -27,6 +40,12 @@
     <p>Millimetres. Ask Jarvis for a board, or orbit with the mouse.</p>
     <p>Axes: <span style="color:#ff6666">X along</span> · <span style="color:#55dd66">Y across</span> · <span style="color:#77aaff">Z up</span></p>
     <div id="list">Empty.</div>
+  </div>
+  <div id="world">
+    <h1>WORLD</h1>
+    <div class="row"><span class="k">Grid square</span><span class="v" id="grid-cell">—</span></div>
+    <div class="row"><span class="k">Grid extent</span><span class="v" id="grid-span">—</span></div>
+    <div class="row"><span class="k">Units</span><span class="v">mm</span></div>
   </div>
   <canvas id="c"></canvas>
   <script type="importmap">
