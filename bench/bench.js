@@ -56,11 +56,14 @@ function rebuild() {
     const L = p.length_mm || 100;
     const W = p.width_mm || 40;
     const T = p.thickness_mm || 15;
-    const geom = new THREE.BoxGeometry(L, T, W);
+    const up = !!p.upright;
+    const geom = up
+      ? new THREE.BoxGeometry(T, L, W)
+      : new THREE.BoxGeometry(L, T, W);
     const mesh = new THREE.Mesh(geom, wood);
     mesh.position.set(
-      (p.x_mm || 0) + L / 2,
-      (p.z_mm || 0) + T / 2,
+      (p.x_mm || 0) + (up ? T : L) / 2,
+      (p.z_mm || 0) + (up ? L : T) / 2,
       (p.y_mm || 0) + W / 2
     );
     group.add(mesh);
@@ -75,7 +78,7 @@ function rebuild() {
     ? parts
         .map(
           (p) =>
-            `<div class="part"><strong>${p.name || p.kind}</strong><div class="dim">${p.length_mm} × ${p.width_mm} × ${p.thickness_mm} mm</div></div>`
+            `<div class="part"><strong>${p.name || p.kind}</strong><div class="dim">${p.length_mm} × ${p.width_mm} × ${p.thickness_mm} mm · ${p.upright ? "vertical" : "flat"}</div></div>`
         )
         .join("")
     : "Empty.";

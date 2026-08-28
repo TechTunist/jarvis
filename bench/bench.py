@@ -39,7 +39,14 @@ def save_scene(path: Path, scene: dict) -> None:
     path.write_text(json.dumps(scene, indent=2) + "\n", encoding="utf-8")
 
 
-def add_board(scene: dict, length_mm: float, width_mm: float, thickness_mm: float, name: str = "") -> dict:
+def add_board(
+    scene: dict,
+    length_mm: float,
+    width_mm: float,
+    thickness_mm: float,
+    name: str = "",
+    upright: bool = False,
+) -> dict:
     parts = list(scene.get("parts") or [])
     n = len(parts) + 1
     y = 0.0
@@ -55,11 +62,47 @@ def add_board(scene: dict, length_mm: float, width_mm: float, thickness_mm: floa
         "x_mm": 0.0,
         "y_mm": y,
         "z_mm": 0.0,
+        "upright": bool(upright),
     }
     parts.append(part)
     scene["parts"] = parts
     scene["units"] = "mm"
     return part
+
+
+def find_part(scene: dict, n: int | None = None, ident: str = "") -> dict | None:
+    parts = list(scene.get("parts") or [])
+    if not parts:
+        return None
+    if ident:
+        key = ident.strip().lower()
+        for p in parts:
+            if key in {str(p.get("id") or "").lower(), str(p.get("name") or "").lower()}:
+                return p
+    if n is not None:
+        for p in parts:
+            if str(p.get("id") or "") == f"p{n}":
+                return p
+            name = str(p.get("name") or "").lower()
+            if name == f"board {n}" or name.endswith(f" {n}"):
+                return p
+        if 1 <= n <= len(parts):
+            return parts[n - 1]
+    return parts[-1]
+
+
+def set_upright(part: dict, upright: bool = True) -> dict:
+    part["upright"] = bool(upright)
+    return part
+
+
+def delete_part(scene: dict, part: dict) -> bool:
+    parts = list(scene.get("parts") or [])
+    keep = [p for p in parts if p is not part and p.get("id") != part.get("id")]
+    if len(keep) == len(parts):
+        return False
+    scene["parts"] = keep
+    return True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -89,6 +132,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/health":
+            self._json({"ok": True, "api": 2})
+            return
         if path == "/api/scene":
             self._json(load_scene(scene_path(self.data_dir)))
             return
@@ -141,12 +187,39 @@ class Handler(BaseHTTPRequestHandler):
                     float(body["width_mm"]),
                     float(body["thickness_mm"]),
                     str(body.get("name") or ""),
+                    upright=bool(body.get("upright")),
                 )
             except (KeyError, TypeError, ValueError):
                 self._json({"error": "need length_mm, width_mm, thickness_mm"}, 400)
                 return
             save_scene(dest, scene)
             self._json({"part": part, "scene": scene})
+            return
+        if path == "/api/orient":
+            part = find_part(
+                scene,
+                n=int(body["n"]) if str(body.get("n") or "").isdigit() else None,
+                ident=str(body.get("id") or body.get("name") or ""),
+            )
+            if part is None:
+                self._json({"error": "no such board"}, 404)
+                return
+            set_upright(part, body.get("upright", True) is not False)
+            save_scene(dest, scene)
+            self._json({"part": part, "scene": scene})
+            return
+        if path == "/api/delete":
+            part = find_part(
+                scene,
+                n=int(body["n"]) if str(body.get("n") or "").isdigit() else None,
+                ident=str(body.get("id") or body.get("name") or ""),
+            )
+            if part is None:
+                self._json({"error": "no such board"}, 404)
+                return
+            delete_part(scene, part)
+            save_scene(dest, scene)
+            self._json({"deleted": part.get("name") or part.get("id"), "scene": scene})
             return
         self._send(b"not found", "text/plain", 404)
 

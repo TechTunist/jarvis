@@ -16,10 +16,9 @@ _DEFAULT = (
         "health": "http://127.0.0.1:8770/api/scene",
         "hint": (
             "Millimetre timber bench. If down, python3 bench.py (port 8770). "
-            "Add a board: curl -sS -X POST http://127.0.0.1:8770/api/parts "
-            "-H 'Content-Type: application/json' "
-            "-d '{\"kind\":\"board\",\"length_mm\":1600,\"width_mm\":70,\"thickness_mm\":15}'. "
-            "Scene: curl -sS http://127.0.0.1:8770/api/scene . "
+            "Add: POST /api/parts JSON length_mm,width_mm,thickness_mm, optional upright true. "
+            "Stand a board: POST /api/orient {\"n\":1,\"upright\":true}. "
+            "Delete: POST /api/delete {\"n\":2}. Scene: GET /api/scene. "
             "Open UI: xdg-open http://127.0.0.1:8770 ."
         ),
     },

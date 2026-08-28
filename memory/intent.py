@@ -237,11 +237,24 @@ _BENCH = re.compile(
     r"(?:"
     r"\b(?:bit|piece|length|plank|board|batten)\s+of\s+wood\b"
     r"|\b(?:timber|lumber)\b"
-    r"|\bon the bench\b"
-    r"|\b(?:3d|three[- ]dimensional)\s+model\b.{0,80}\b(?:wood|timber|board|plank)\b"
-    r"|\b(?:wood|timber|board|plank)\b.{0,80}\b(?:3d|three[- ]dimensional)\s+model\b"
-    r"|\b\d+(?:\.\d+)?\s*(?:mm)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm)?\s*[x×]\s*\d+(?:\.\d+)?\s*mm\b"
-    r"|\b\d+(?:\.\d+)?\s*(?:mm)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm)?\b"
+    r"|\b(?:on|in)\s+(?:the\s+)?bench\b"
+    r"|\bport\s+8770\b"
+    r"|\bmillimet(?:er|re)s?\s+bench\b"
+    r"|\b(?:3d|three[- ]dimensional)\s+model\b.{0,80}\b(?:wood|timber|board|plank|shape|bench)\b"
+    r"|\b(?:wood|timber|board|plank|shape|bench)\b.{0,80}\b(?:3d|three[- ]dimensional)\s+model\b"
+    r"|\b\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)\b"
+    r"|\b\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\b"
+    r")",
+    re.I,
+)
+_BENCH_MUTATE = re.compile(
+    r"(?:"
+    r"\b(?:delete|remove|drop|get rid of)\b.{0,40}\b(?:board|part|plate|model)s?\b"
+    r"|\b(?:board|part|plate)\s+\d+\b.{0,40}\b(?:delete|remove|vertical|upright|stand|end)"
+    r"|\bstand(?:ing)?\s+(?:it|that|the|this|up)\b"
+    r"|\bon end\b|\bupright\b"
+    r"|\b(?:make|stand|orient).{0,40}\bvertical\b"
+    r"|\bvertical\b.{0,40}\b(?:board|plate|end|bench)"
     r")",
     re.I,
 )
@@ -426,6 +439,8 @@ def classify(text: str) -> Intent:
         return CHAT
     if _HUSH.search(raw):
         return HUSH
+    if _BENCH.search(raw) or _BENCH_MUTATE.search(raw):
+        return BENCH
     if _REMEMBER.search(raw) or _FORGET.search(raw) or _PLACE_UPDATE.search(raw):
         return REMEMBER
     if _HOME_QUERY.search(raw) and not _HOME_ACT.search(raw):
@@ -436,8 +451,6 @@ def classify(text: str) -> Intent:
         return STATUS
     if is_reply_not_request(raw):
         return CHAT
-    if _BENCH.search(raw):
-        return BENCH
     if _IMAGINE.search(raw):
         return ANIMATE if wants_animation(raw) else IMAGINE
     if _SEE.search(raw):
@@ -495,6 +508,8 @@ def resolve_intents(
     if fast.cap == "vault-write":
         return [fast]
     if fast.cap == "home":
+        return [fast]
+    if fast.cap == "bench":
         return [fast]
     if fast.kind == "diagnose":
         return [fast]

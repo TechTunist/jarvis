@@ -10,4 +10,4 @@ python3 bench/bench.py          # http://127.0.0.1:8770/
 
 Talk: “create a 3d model of a bit of wood 1600 by 70 by 15 millimetres.” Mouth acks; hands POST the board; the page shows it.
 
-API: `GET /api/scene`, `POST /api/parts` `{"kind":"board","length_mm":1600,"width_mm":70,"thickness_mm":15}`, `POST /api/clear`.
+API: `GET /api/scene`, `POST /api/parts` `{kind,length_mm,width_mm,thickness_mm,upright?}`, `POST /api/orient` `{n,upright}`, `POST /api/delete` `{n}`, `POST /api/clear`.

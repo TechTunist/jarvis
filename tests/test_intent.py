@@ -142,7 +142,25 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(
             classify("add a board 1600 x 70 x 15 mm to the bench").cap, BENCH.cap
         )
+        self.assertEqual(
+            classify(
+                "hi jarvis, on bench, can you create a 3d model that ahs "
+                "the dimensions 1600mm by 70mm by 15mm thick please. orient it vertically"
+            ).cap,
+            BENCH.cap,
+        )
+        self.assertEqual(
+            classify("can you create a 3d model of a shape that is 1600 x 70 x 15 millimeters").cap,
+            BENCH.cap,
+        )
+        self.assertEqual(classify("lets stand it up so it is vertical").cap, BENCH.cap)
+        self.assertEqual(
+            classify("now there are 2 models that are both horizontal. delete board 2 and make board 1 vertical").cap,
+            BENCH.cap,
+        )
+        self.assertEqual(classify("on mililimeter bench, delete board 2").cap, BENCH.cap)
         self.assertEqual(classify("Generate an image of a cat").cap, IMAGINE.cap)
+        self.assertEqual(classify("Never do that again.").kind, "remember")
 
     def test_imagine(self) -> None:
         for text in (
