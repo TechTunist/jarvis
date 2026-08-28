@@ -8,6 +8,7 @@ from pathlib import Path
 from memory.home import JarvisHome
 from memory.intent import (
     ANIMATE,
+    BENCH,
     CHAT,
     CODE,
     FORGE,
@@ -131,6 +132,17 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(
             classify("it is still dark in the living room jarvis").cap, HOME.cap
         )
+
+    def test_timber_bench_is_not_imagine(self) -> None:
+        uttered = (
+            "create a 3d model of a bit of wood that is 1600x70x15mm in dimensions"
+        )
+        self.assertEqual(classify(uttered).cap, BENCH.cap)
+        self.assertEqual(resolve_intent(uttered).cap, BENCH.cap)
+        self.assertEqual(
+            classify("add a board 1600 x 70 x 15 mm to the bench").cap, BENCH.cap
+        )
+        self.assertEqual(classify("Generate an image of a cat").cap, IMAGINE.cap)
 
     def test_imagine(self) -> None:
         for text in (

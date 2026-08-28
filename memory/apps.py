@@ -8,6 +8,22 @@ from memory.home import JarvisHome
 
 _DEFAULT = (
     {
+        "id": "bench",
+        "names": ("bench", "timber", "lumber", "3d model", "bit of wood"),
+        "root": str(Path(__file__).resolve().parent.parent / "bench"),
+        "start": "python3 bench.py",
+        "url": "http://127.0.0.1:8770",
+        "health": "http://127.0.0.1:8770/api/scene",
+        "hint": (
+            "Millimetre timber bench. If down, python3 bench.py (port 8770). "
+            "Add a board: curl -sS -X POST http://127.0.0.1:8770/api/parts "
+            "-H 'Content-Type: application/json' "
+            "-d '{\"kind\":\"board\",\"length_mm\":1600,\"width_mm\":70,\"thickness_mm\":15}'. "
+            "Scene: curl -sS http://127.0.0.1:8770/api/scene . "
+            "Open UI: xdg-open http://127.0.0.1:8770 ."
+        ),
+    },
+    {
         "id": "watcher",
         "names": ("watcher", "deal hunter", "outlier"),
         "root": str(Path.home() / "watcher"),

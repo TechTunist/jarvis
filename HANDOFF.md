@@ -47,6 +47,7 @@ Host caps: `search`, `vault-write`, `distill`, `home`, `imagine`, `docs`, `forge
 | Look up / cold weather | Hands web search, then he speaks the answer. |
 | Remember / remind me at 8pm | Vault. Duplicates of the same daily reminder do not stack. |
 | Draw / animate / PDF / spec | Ack, then files in Pictures / Videos / Documents. |
+| A board 1600×70×15 mm / timber on the bench | Local 3d bench (`http://127.0.0.1:8770/`), not Imagine. |
 | Run the tests / patch / implement | Hands, full Grok Build. Branch `jarvis/workshop-*`. No merge, no push, no Talk restart. |
 | How is the work going? | Mouth reads the `[hands]` brief. |
 | Last workout / what did I lift / my weight | `forge` → Supabase (needs login in secrets). Read-only. |

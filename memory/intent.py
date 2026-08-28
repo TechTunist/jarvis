@@ -35,6 +35,7 @@ HUSH = Intent("hush", None, "", 0.0)
 CODE = Intent("code", "shell", "I'll take that, sir.", 0.0)
 FORGE = Intent("forge", "forge", "I'll check the log, sir.", 0.0)
 SEE = Intent("see", "see", "I'll have a look, sir.", 40.0)
+BENCH = Intent("bench", "bench", "I'll put that on the bench, sir.", 20.0)
 DIAGNOSE = Intent(
     "diagnose",
     "diagnose",
@@ -95,6 +96,11 @@ _ACKS = {
         "Something's off. I'm looking into it, sir.",
         "That didn't sit right. Checking it, sir.",
         "I'm running a look at that now, sir.",
+    ),
+    "bench": (
+        "I'll put that on the bench, sir.",
+        "On the bench, sir.",
+        "Modelling that now, sir.",
     ),
 }
 _last_ack: dict[str, str] = {}
@@ -223,6 +229,19 @@ _HOME = re.compile(
     r"\b(?:kill|cut)\s+(?:the\s+)?(?:glow|glare)\b"
     r"|"
     r"\bgloomy\b"
+    r")",
+    re.I,
+)
+
+_BENCH = re.compile(
+    r"(?:"
+    r"\b(?:bit|piece|length|plank|board|batten)\s+of\s+wood\b"
+    r"|\b(?:timber|lumber)\b"
+    r"|\bon the bench\b"
+    r"|\b(?:3d|three[- ]dimensional)\s+model\b.{0,80}\b(?:wood|timber|board|plank)\b"
+    r"|\b(?:wood|timber|board|plank)\b.{0,80}\b(?:3d|three[- ]dimensional)\s+model\b"
+    r"|\b\d+(?:\.\d+)?\s*(?:mm)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm)?\s*[x×]\s*\d+(?:\.\d+)?\s*mm\b"
+    r"|\b\d+(?:\.\d+)?\s*(?:mm)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm)?\b"
     r")",
     re.I,
 )
@@ -417,6 +436,8 @@ def classify(text: str) -> Intent:
         return STATUS
     if is_reply_not_request(raw):
         return CHAT
+    if _BENCH.search(raw):
+        return BENCH
     if _IMAGINE.search(raw):
         return ANIMATE if wants_animation(raw) else IMAGINE
     if _SEE.search(raw):
@@ -480,7 +501,9 @@ def resolve_intents(
     if is_reply_not_request(raw):
         return [CHAT]
     found: list[Intent] = []
-    if _IMAGINE.search(raw):
+    if _BENCH.search(raw):
+        found.append(BENCH)
+    if _IMAGINE.search(raw) and not _BENCH.search(raw):
         found.append(ANIMATE if wants_animation(raw) else IMAGINE)
     if _SEE.search(raw):
         found.append(SEE)

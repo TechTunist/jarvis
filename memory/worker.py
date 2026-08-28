@@ -35,6 +35,7 @@ HOST_CAPS = (
     "forge",
     "see",
     "diagnose",
+    "bench",
 )
 FORGE_SYSTEM = (
     JARVIS_PERSONA
@@ -360,6 +361,8 @@ class HostWorker:
                 return self._see(snap)
             if cap == "diagnose":
                 return self._diagnose(snap)
+            if cap == "bench":
+                return self._bench(snap)
             raise RuntimeError(f"unsupported cap {cap!r}")
         finally:
             self._audience = ""
@@ -376,6 +379,11 @@ class HostWorker:
         from memory.diagnose import inspect
 
         return inspect(self.home, str(snap.get("prompt") or ""))
+
+    def _bench(self, snap: dict) -> tuple[str, str]:
+        from memory.bench import apply
+
+        return apply(self.home, str(snap.get("prompt") or ""))
 
     def _forge(self, snap: dict) -> tuple[str, str]:
         from memory.forge import fetch_brief, load_secrets

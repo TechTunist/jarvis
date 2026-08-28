@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bench</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #1a1410; overflow: hidden; }
+    #c { display: block; width: 100%; height: 100%; }
+    #panel {
+      position: fixed; top: 12px; left: 12px; z-index: 2;
+      width: 260px; max-height: calc(100% - 24px); overflow: auto;
+      background: rgba(18, 12, 8, 0.88); color: #e8d5b0;
+      font: 13px/1.4 -apple-system, system-ui, sans-serif;
+      padding: 12px 14px; border-radius: 10px;
+      border: 1px solid #8a6a3a;
+    }
+    #panel h1 { margin: 0 0 8px; font-size: 15px; letter-spacing: 0.08em; color: #f0c060; }
+    #panel p { margin: 0 0 10px; opacity: 0.8; }
+    .part { margin: 0 0 8px; padding: 6px 0; border-top: 1px solid #3a2a18; }
+    .dim { color: #c4a56a; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <h1>BENCH</h1>
+    <p>Millimetres. Ask Jarvis for a board, or orbit with the mouse.</p>
+    <div id="list">Empty.</div>
+  </div>
+  <canvas id="c"></canvas>
+  <script type="importmap">
+  { "imports": { "three": "/vendor/three.module.min.js" } }
+  </script>
+  <script type="module" src="/bench.js"></script>
+</body>
+</html>

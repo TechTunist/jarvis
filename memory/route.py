@@ -79,6 +79,9 @@ _CAP_ALIAS = {
     "camera": "see",
     "diagnose": "diagnose",
     "diagnostic": "diagnose",
+    "bench": "bench",
+    "timber": "bench",
+    "lumber": "bench",
 }
 
 
@@ -145,6 +148,10 @@ def intent_for_cap(cap: str, text: str):
         from memory.intent import DIAGNOSE
 
         return DIAGNOSE
+    if key == "bench":
+        from memory.intent import BENCH
+
+        return BENCH
     return CHAT
 
 
