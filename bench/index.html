@@ -19,33 +19,113 @@
     #panel p { margin: 0 0 10px; opacity: 0.8; }
     .part { margin: 0 0 8px; padding: 6px 0; border-top: 1px solid #3a2a18; }
     .dim { color: #c4a56a; font-variant-numeric: tabular-nums; }
-    #world {
+    #right {
       position: fixed; top: 12px; right: 12px; z-index: 2;
       width: 220px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    #world, #inspect {
       background: rgba(18, 12, 8, 0.88); color: #e8d5b0;
       font: 13px/1.45 -apple-system, system-ui, sans-serif;
       padding: 12px 14px; border-radius: 10px;
       border: 1px solid #8a6a3a;
       text-align: right;
     }
-    #world h1 { margin: 0 0 8px; font-size: 15px; letter-spacing: 0.08em; color: #f0c060; }
+    #world h1, #inspect h1 {
+      margin: 0 0 8px; font-size: 15px; letter-spacing: 0.08em; color: #f0c060;
+    }
     #world .row { display: flex; justify-content: space-between; gap: 12px; }
     #world .k { opacity: 0.75; }
     #world .v { color: #c4a56a; font-variant-numeric: tabular-nums; }
+    #inspect[hidden] { display: none; }
+    #inspect .name { margin: 0 0 6px; font-weight: 600; }
+    #inspect .dim { text-align: right; }
+    #inspect-name-input {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      margin: 0 0 6px;
+      padding: 4px 6px;
+      border: 1px solid #8a6a3a;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.28);
+      color: #e8d5b0;
+      font: inherit;
+      font-weight: 600;
+      text-align: right;
+    }
+    #inspect-name-input[hidden] { display: none; }
+    #inspect-name-input:focus { outline: none; border-color: #f0c060; }
+    .part { user-select: none; }
+    .part.selected { border-color: #c4a56a; }
+    .part.hover { border-color: #8a6a3a; background: rgba(196, 165, 106, 0.08); }
+    #actions {
+      background: rgba(18, 12, 8, 0.88); color: #e8d5b0;
+      font: 13px/1.45 -apple-system, system-ui, sans-serif;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid #8a6a3a;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    #actions button {
+      font: inherit;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: #e8d5b0;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid #8a6a3a;
+      border-radius: 6px;
+      padding: 7px 8px;
+      cursor: pointer;
+    }
+    #actions button:hover:not(:disabled) { border-color: #f0c060; color: #f0c060; }
+    #actions button:disabled { opacity: 0.35; cursor: default; }
+    #actions button.danger:hover:not(:disabled) { border-color: #cc6666; color: #ff8888; }
   </style>
 </head>
 <body>
   <div id="panel">
     <h1>BENCH</h1>
-    <p>Millimetres. Ask Jarvis for a board, or orbit with the mouse.</p>
+    <p>Millimetres. Left-drag orbit · right-drag or Shift-drag pan · scroll zoom · click a board · Shift-click add to a selection · grab an axis to move all selected · Shift-drag free · double-click push/pull · R rotate · Cut Copy Paste Delete · Ctrl-Z undo.</p>
     <p>Axes: <span style="color:#ff6666">X along</span> · <span style="color:#55dd66">Y across</span> · <span style="color:#77aaff">Z up</span></p>
+    <div id="site-block" hidden>
+      <div class="part"><strong>Site</strong><div class="dim" id="site-dim"></div></div>
+    </div>
+    <div id="check-block" hidden>
+      <div class="part"><strong>Checks</strong><div class="dim" id="check-dim"></div></div>
+    </div>
+    <div id="stock-block" hidden>
+      <div class="part"><strong>Stock</strong><div class="dim" id="stock-dim"></div></div>
+    </div>
     <div id="list">Empty.</div>
   </div>
-  <div id="world">
-    <h1>WORLD</h1>
-    <div class="row"><span class="k">Grid square</span><span class="v" id="grid-cell">—</span></div>
-    <div class="row"><span class="k">Grid extent</span><span class="v" id="grid-span">—</span></div>
-    <div class="row"><span class="k">Units</span><span class="v">mm</span></div>
+  <div id="right">
+    <div id="world">
+      <h1>WORLD</h1>
+      <div class="row"><span class="k">Grid square</span><span class="v" id="grid-cell">—</span></div>
+      <div class="row"><span class="k">Grid extent</span><span class="v" id="grid-span">—</span></div>
+      <div class="row"><span class="k">Alley</span><span class="v" id="alley-span">—</span></div>
+      <div class="row"><span class="k">Look-at</span><span class="v" id="look-at">—</span></div>
+      <div class="row"><span class="k">Distance</span><span class="v" id="cam-dist">—</span></div>
+      <div class="row"><span class="k">Units</span><span class="v">mm</span></div>
+    </div>
+    <div id="inspect" hidden>
+      <h1 id="inspect-title">PART</h1>
+      <div class="name" id="inspect-name"></div>
+      <input id="inspect-name-input" type="text" spellcheck="false" autocomplete="off" hidden />
+      <div class="dim" id="inspect-dim"></div>
+      <div class="dim" id="inspect-loc"></div>
+      <div class="dim" id="inspect-rot"></div>
+      <div class="dim" id="inspect-hint" hidden>Drag a face in or out.</div>
+    </div>
+    <div id="actions">
+      <button type="button" data-act="cut" id="act-cut" title="Ctrl-X" disabled>Cut</button>
+      <button type="button" data-act="copy" id="act-copy" title="Ctrl-C" disabled>Copy</button>
+      <button type="button" data-act="paste" id="act-paste" title="Ctrl-V" disabled>Paste</button>
+      <button type="button" data-act="delete" id="act-delete" class="danger" title="Delete" disabled>Delete</button>
+    </div>
   </div>
   <canvas id="c"></canvas>
   <script type="importmap">

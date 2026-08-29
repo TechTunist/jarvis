@@ -46,6 +46,7 @@ class ClassifyTests(unittest.TestCase):
             "Generate a report",
             "How old are you Jarvis?",
             "Explain your capabilities.",
+            "do you remember the information about the pergola i wanted to build",
         ):
             with self.subTest(text=text):
                 self.assertEqual(classify(text).kind, CHAT.kind)
@@ -159,8 +160,34 @@ class ClassifyTests(unittest.TestCase):
             BENCH.cap,
         )
         self.assertEqual(classify("on mililimeter bench, delete board 2").cap, BENCH.cap)
+        self.assertEqual(
+            classify(
+                "please create the structure in Bench that uses the available timbers. "
+                "we need 2m headroom in the middle of the alley"
+            ).cap,
+            BENCH.cap,
+        )
+        self.assertEqual(
+            classify(
+                "just design and create the entire structure please. "
+                "lets have 3 upright boards at 333mm centres, then reason about "
+                "how to create the rafter structure"
+            ).cap,
+            BENCH.cap,
+        )
+        self.assertEqual(classify("can you open the bench please").cap, BENCH.cap)
+        self.assertEqual(classify("close the bench please").cap, BENCH.cap)
+        self.assertEqual(
+            classify("lets stop the bench right now. I want to do something else").cap,
+            BENCH.cap,
+        )
         self.assertEqual(classify("Generate an image of a cat").cap, IMAGINE.cap)
         self.assertEqual(classify("Never do that again.").kind, "remember")
+        self.assertIsNone(
+            resolve_intent(
+                "do you remember the information about the pergola i wanted to build"
+            ).cap
+        )
 
     def test_imagine(self) -> None:
         for text in (

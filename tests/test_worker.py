@@ -44,6 +44,10 @@ def fake_complete(prompt: str, **kwargs) -> str:
             "## Flash\nSame firmware image on every unit. MQTT or WebSocket to host-xps.\n\n"
             "## Test\nMute kills the link LED. Desk hears a clap from that room.\n"
         )
+    if "millimetre" in str(kwargs.get("system") or "").lower() and "bench" in str(
+        kwargs.get("system") or ""
+    ).lower():
+        return json.dumps({"speak": "The bench is closed, sir.", "ok": True})
     if kwargs.get("web"):
         return "Rain later, sir. Take a coat."
     if "Transcript:" in prompt:
@@ -307,6 +311,44 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(worker.tick())
         self.assertEqual(self.board.latest_status(jid), "error")
 
+    def test_bench_timeout_is_spoken(self) -> None:
+        def complete(*_a, **_k):
+            raise TimeoutError("grok prompt timed out")
+
+        worker = HostWorker(self.home, worker_id="host-bench-to", complete=complete)
+        jid = self.board.enqueue("bench", "design the pergola in the bench")
+        worker.advertise()
+        self.assertTrue(worker.tick())
+        snap = self.board.snapshot(jid)
+        self.assertEqual(snap["event"], "done")
+        self.assertIn("time", (snap.get("speak") or "").lower())
+
+    def test_bench_hands_are_grok_with_a_terminal(self) -> None:
+        seen: dict = {}
+
+        def complete(prompt: str, **kw) -> str:
+            seen["prompt"] = prompt
+            seen["kw"] = kw
+            return json.dumps({"speak": "The bench is closed, sir.", "ok": True})
+
+        worker = HostWorker(self.home, worker_id="host-bench", complete=complete)
+        jid = self.board.enqueue("bench", "close the bench please")
+        worker.advertise()
+        self.assertTrue(worker.tick())
+        snap = self.board.snapshot(jid)
+        self.assertEqual(snap["event"], "done")
+        self.assertIn("closed", (snap.get("speak") or "").lower())
+        kw = seen.get("kw") or {}
+        self.assertNotEqual(kw.get("tools"), "")
+        self.assertNotIn("run_terminal_cmd", str(kw.get("disallowed") or ""))
+        self.assertIn("image_gen", str(kw.get("disallowed") or ""))
+        self.assertEqual(kw.get("effort"), "high")
+        self.assertTrue(kw.get("subagents"))
+        self.assertGreaterEqual(int(kw.get("max_turns") or 0), 12)
+        self.assertEqual(int(kw.get("timeout") or 0), 600)
+        self.assertIn("Matt asked", seen.get("prompt") or "")
+        self.assertIn("close the bench", (seen.get("prompt") or "").lower())
+
     def test_unsupported_cap_fails_job(self) -> None:
         jid = self.board.enqueue("spaceship", "launch")
         worker = HostWorker(
@@ -382,6 +424,29 @@ class GrokrunParseTests(unittest.TestCase):
 
         self.assertIn("image_gen", NO_TOOLS)
         self.assertIn("image_to_video", NO_TOOLS)
+
+    def test_prompt_argv_bench_uses_full_build_minus_imagine(self) -> None:
+        from memory.bench import BENCH_SYSTEM
+        from memory.grokrun import NO_MEDIA, prompt_argv
+
+        argv = prompt_argv(
+            "close the bench",
+            grok=Path("/tmp/grok"),
+            model="grok-4.6",
+            system=BENCH_SYSTEM,
+            web=False,
+            disallowed=NO_MEDIA,
+            subagents=True,
+            effort="high",
+            cwd=Path("/tmp/jarvis"),
+        )
+        self.assertNotIn("--tools", argv)
+        self.assertNotIn("--no-subagents", argv)
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
+        denied = argv[argv.index("--disallowed-tools") + 1]
+        self.assertIn("image_gen", denied)
+        self.assertNotIn("run_terminal_cmd", denied)
+        self.assertNotIn("search_replace", denied)
 
     def test_prompt_argv_shell_uses_full_build_minus_imagine(self) -> None:
         from memory.grokrun import prompt_argv

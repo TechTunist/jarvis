@@ -53,7 +53,6 @@ from memory.ha import is_no, is_yes, pending_confirm  # noqa: E402
 from memory.intent import HOME, HUSH, classify, maybe_enqueue, resolve_intents  # noqa: E402
 from memory.replace import (  # noqa: E402
     ask as ask_replace,
-    contended,
     keep_line,
     pending as pending_replace,
     clear as clear_replace,
@@ -1401,11 +1400,6 @@ class Desk:
             return self.report_work(text, stt_ms=stt_ms)
         if self.pending and is_ping(text) and not any(getattr(i, "cap", None) for i in resolved):
             return self.report_work(text, stt_ms=stt_ms)
-        jobs_now = [i for i in resolved if getattr(i, "cap", None)]
-        if jobs_now:
-            busy = contended(self.board, self.registry, jobs_now[0].cap)
-            if busy:
-                return self._ask_replace(text, jobs_now[0], busy, stt_ms=stt_ms)
         self.gen += 1
         my_gen = self.gen
         spoken: list[str] = []
@@ -1698,7 +1692,10 @@ class Desk:
     @staticmethod
     def _speak_line(snap: dict) -> str:
         if snap.get("event") == "error":
-            return "I couldn't finish that, sir."
+            from memory.dispatch import audible
+
+            said = audible(str(snap.get("speak") or ""))
+            return said or "I couldn't finish that, sir."
         from memory.dispatch import audible
 
         return audible(str(snap.get("speak") or ""))

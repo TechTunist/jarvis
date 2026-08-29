@@ -238,11 +238,13 @@ _BENCH = re.compile(
     r"\b(?:bit|piece|length|plank|board|batten)\s+of\s+wood\b"
     r"|\b(?:timber|lumber)\b"
     r"|\b(?:on|in)\s+(?:the\s+)?bench\b"
+    r"|\b(?:open|close|stop|show|quit)\b.{0,40}\bbench\b"
     r"|\bport\s+8770\b"
     r"|\bmillimet(?:er|re)s?\s+bench\b"
+    r"|\b(?:pergola|rafters?|headroom|alley)\b"
     r"|\b(?:3d|three[- ]dimensional)\s+model\b.{0,80}\b(?:wood|timber|board|plank|shape|bench)\b"
     r"|\b(?:wood|timber|board|plank|shape|bench)\b.{0,80}\b(?:3d|three[- ]dimensional)\s+model\b"
-    r"|\b\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)\b"
+    r"|\b\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\b"
     r"|\b\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\b"
     r")",
     re.I,
@@ -422,6 +424,11 @@ def is_reply_not_request(text: str) -> bool:
     return True
 
 
+_RECALL = re.compile(
+    r"^(?:please\s+)?(?:do you remember|what did i (?:say|tell|ask|give you)|"
+    r"have i told you)\b",
+    re.I,
+)
 _HOME_QUERY = re.compile(
     r"\b(?:what(?:'s|s| is| are)?|which|how many|list|do we have)\b"
     r".{0,40}\b(?:lights?|lamps?|devices?|rooms?)\b",
@@ -441,6 +448,8 @@ def classify(text: str) -> Intent:
         return CHAT
     if _HUSH.search(raw):
         return HUSH
+    if _RECALL.search(raw):
+        return CHAT
     if _BENCH.search(raw) or _BENCH_MUTATE.search(raw):
         return BENCH
     if _REMEMBER.search(raw) or _FORGET.search(raw) or _PLACE_UPDATE.search(raw):
@@ -505,6 +514,8 @@ def resolve_intents(
     fast = classify(raw)
     if fast.kind in {"status", "hush"}:
         return [fast]
+    if _RECALL.search(raw):
+        return [CHAT]
     if obvious_chat(raw) and not fast.cap:
         return [CHAT]
     if fast.cap == "vault-write":

@@ -15,11 +15,18 @@ _DEFAULT = (
         "url": "http://127.0.0.1:8770",
         "health": "http://127.0.0.1:8770/api/scene",
         "hint": (
-            "Millimetre timber bench. If down, python3 bench.py (port 8770). "
+            "Millimetre timber bench. If down, python3 bench.py --data-dir ~/.jarvis --port 8770 "
+            "(PYTHONPATH=jarvis repo first). "
+            "Health: curl -sS http://127.0.0.1:8770/api/health . Scene: GET /api/scene. "
+            "Close: fuser -k 8770/tcp, then health must fail. "
+            "Open UI: DISPLAY=:0 xdg-open http://127.0.0.1:8770/ . "
+            "Stock/site/design: POST /api/ops with set_stock, set_site, set_hints, design. "
             "Add: POST /api/parts JSON length_mm,width_mm,thickness_mm, optional upright true. "
             "Stand a board: POST /api/orient {\"n\":1,\"upright\":true}. "
-            "Delete: POST /api/delete {\"n\":2}. Scene: GET /api/scene. "
-            "Open UI: xdg-open http://127.0.0.1:8770 ."
+            "Delete: POST /api/delete {\"n\":2}. "
+            "Camera (millimetres, look-at is x along, y across, z up): GET /api/scene camera. "
+            "POST /api/camera {look_x_mm,look_y_mm,look_z_mm,az,el,dist_mm}. "
+            "Ops: pan {dx_mm,dy_mm,dz_mm}, look_at {n:3} or {look_x_mm,...}, frame."
         ),
     },
     {

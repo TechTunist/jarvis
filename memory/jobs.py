@@ -221,8 +221,15 @@ class JobBoard:
             event.update(extra)
         self.append(job_id, event)
 
-    def fail(self, job_id: str, error: str) -> None:
-        self.append(job_id, {"event": "error", "error": str(error)[:800], "speak": ""})
+    def fail(self, job_id: str, error: str, *, speak: str = "") -> None:
+        self.append(
+            job_id,
+            {
+                "event": "error",
+                "error": str(error)[:800],
+                "speak": str(speak or ""),
+            },
+        )
 
     def cancel(self, job_id: str, reason: str = "") -> None:
         if self.latest_status(job_id) in TERMINAL:

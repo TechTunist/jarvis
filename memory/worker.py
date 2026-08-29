@@ -12,6 +12,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from datetime import date, datetime, timezone
@@ -381,12 +382,16 @@ class HostWorker:
         return inspect(self.home, str(snap.get("prompt") or ""))
 
     def _bench(self, snap: dict) -> tuple[str, str]:
-        from memory.bench import apply
+        from memory.bench import _get, URL, api_ok, reason
 
-        return apply(
+        scene: dict = {"parts": []}
+        if api_ok():
+            scene = _get(f"{URL}api/scene") or scene
+        return reason(
             self.home,
             str(snap.get("prompt") or ""),
-            complete=self.complete or self._ask,
+            scene,
+            self.complete or self._ask,
         )
 
     def _forge(self, snap: dict) -> tuple[str, str]:
@@ -789,6 +794,17 @@ class HostWorker:
         except InterruptedError:
             log(f"[workshop] {job_id} cancelled")
             return True
+        except TimeoutError as exc:
+            if self.board.latest_status(job_id) == "cancelled":
+                log(f"[workshop] {job_id} cancelled")
+                return True
+            log(f"[workshop] {job_id} error {exc}")
+            self.board.fail(
+                job_id,
+                str(exc),
+                speak="I ran out of time on that, sir. I had started and didn't finish.",
+            )
+            return True
         except Exception as exc:
             if self.board.latest_status(job_id) == "cancelled":
                 log(f"[workshop] {job_id} cancelled")
@@ -820,15 +836,31 @@ class HostWorker:
             f"[workshop] {self.worker_id} caps={','.join(self.caps)} "
             f"home={self.home.root}{extra}"
         )
-        while True:
-            if self.parent_pid and _parent_gone(self.parent_pid):
-                log("[workshop] parent gone, exit")
-                return
-            ran = self.tick()
-            if once:
-                return
-            if not ran:
-                time.sleep(idle_s)
+        stop = threading.Event()
+
+        def _beats() -> None:
+            while not stop.wait(self.heartbeat_s):
+                if self.parent_pid and _parent_gone(self.parent_pid):
+                    return
+                try:
+                    self.advertise()
+                except Exception:
+                    return
+
+        pulse = threading.Thread(target=_beats, daemon=True)
+        pulse.start()
+        try:
+            while True:
+                if self.parent_pid and _parent_gone(self.parent_pid):
+                    log("[workshop] parent gone, exit")
+                    return
+                ran = self.tick()
+                if once:
+                    return
+                if not ran:
+                    time.sleep(idle_s)
+        finally:
+            stop.set()
 
 
 def spawn_host_workshop(
