@@ -159,7 +159,7 @@ def last_jobs(home: JarvisHome, *, limit: int = 3, clip: int = 220) -> str:
     return "Last jobs: " + " ".join(reversed(lines))
 
 
-def desk_prefix(home: JarvisHome, person=None) -> str:
+def desk_prefix(home: JarvisHome, person=None, asked: str = "") -> str:
     parts: list[str] = []
     if person is not None:
         from memory.people import speaker_note
@@ -173,6 +173,42 @@ def desk_prefix(home: JarvisHome, person=None) -> str:
     hands = hands_brief(home)
     if hands:
         parts.append("[hands]\n" + hands)
+    from memory.bench import bench_note, kit_note
+
+    brief = bench_note(home)
+    if brief:
+        parts.append("[bench]\n" + brief)
+    parts.append("[kit]\n" + kit_note())
+    from memory.projects import project_notes, projects_index
+
+    index = projects_index(home)
+    if index:
+        parts.append("[projects]\n" + index)
+    for slug, body in project_notes(home, asked):
+        parts.append(f"[project:{slug}]\n" + body)
+    from memory.brief import (
+        assemble_brief,
+        looks_like_news,
+        news_fresh,
+        news_note,
+        wants_brief,
+        weather_note,
+    )
+
+    day_note = ""
+    if wants_brief(asked):
+        day_note = assemble_brief(home)
+        if day_note:
+            parts.append("[brief]\n" + day_note)
+    else:
+        if looks_like_weather(asked):
+            wx = weather_note(home)
+            if wx:
+                parts.append("[weather]\n" + wx)
+        if looks_like_news(asked) and news_fresh(home):
+            news = news_note(home)
+            if news:
+                parts.append("[news]\n" + news)
     done = last_jobs(home)
     if done:
         parts.append("[last jobs]\n" + done)
@@ -187,7 +223,15 @@ def desk_prefix(home: JarvisHome, person=None) -> str:
         + "\nUse this if they refer to something just said. "
         "Do not claim you have no location when Weather location is set. "
         "If [hands] is present, that work is running — report it if asked; "
-        "do not invent extra progress. [last jobs] and Recent conversation "
+        "do not invent extra progress. [bench] is the millimetre timber model "
+        "as it is now; answer questions about it from there. "
+        "[projects] / [project:…] is engineering on file; answer from it. "
+        + (
+            "They asked about the day — a short line from [brief], not a list. "
+            if day_note
+            else ""
+        )
+        + "[last jobs] and Recent conversation "
         "are already true; never deny them."
     )
 
@@ -217,6 +261,13 @@ def search_prompt(home: JarvisHome, asked: str) -> str:
         chunks.append(
             f"Default weather location: {place}. "
             "If Matt does not name a city, use this. Do not ask which city."
+        )
+    from memory.brief import looks_like_news
+
+    if looks_like_news(asked):
+        chunks.append(
+            "Two short sentences: UK/Kent headlines that matter to him, and SPCX/SpaceX "
+            "if in the news. No URLs."
         )
     if recent:
         chunks.append("Recent conversation:\n" + recent)

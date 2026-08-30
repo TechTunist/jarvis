@@ -30,6 +30,9 @@ class HomeTests(unittest.TestCase):
         self.assertTrue((self.home.vault / "people" / "_household.md").is_file())
         self.assertTrue((self.home.vault / "never.md").is_file())
         self.assertTrue((self.home.vault / "reminders.md").is_file())
+        self.assertTrue((self.home.vault / "calendar.md").is_file())
+        self.assertTrue((self.home.vault / "projects" / "pergola.md").is_file())
+        self.assertTrue((self.home.vault / "projects" / "room-node.md").is_file())
         self.assertTrue((self.home.secrets / "README.md").is_file())
         self.assertTrue(self.home.imagine.is_dir())
         self.assertFalse((self.home.secrets / "ha.token").exists())
@@ -86,6 +89,12 @@ class PromptTests(unittest.TestCase):
         self.assertNotIn("workbench is not connected yet", SPEECH_RULES)
         self.assertIn("do not emit [hands:]", SPEECH_RULES.lower())
         self.assertIn("already doing the work", SPEECH_RULES)
+        self.assertIn("[hands:bench] just to look", SPEECH_RULES)
+        self.assertIn("Never [hands:docs] for that", SPEECH_RULES)
+        self.assertIn("[project:…]", SPEECH_RULES)
+        self.assertIn("[brief]", SPEECH_RULES)
+        self.assertIn("Never volunteer [brief]", SPEECH_RULES)
+        self.assertIn("including on hello", SPEECH_RULES)
         self.assertNotIn("Do not discuss microphones", SPEECH_RULES)
         extra = prompt[len(SPEECH_RULES) :]
         self.assertLessEqual(len(extra), 500 + 80)
@@ -99,6 +108,7 @@ class PromptTests(unittest.TestCase):
         labels = [n[0] for n in notes]
         self.assertIn("boot", labels)
         self.assertIn("today", labels)
+        self.assertIn("projects", labels)
         self.assertNotIn("yesterday", labels)
 
     def test_fit_notes_drops_tail_when_over_budget(self) -> None:
@@ -111,12 +121,12 @@ class PromptTests(unittest.TestCase):
         prompt = build_system_prompt([], workers="Workers: none.")
         self.assertIn("Workers: none.", prompt)
 
-    def test_weather_cache_in_boot(self) -> None:
+    def test_weather_stays_off_boot(self) -> None:
         (self.home.cache / "weather.md").write_text("Rain later.\n", encoding="utf-8")
         notes = load_boot_notes(self.home, today=date(2026, 8, 22))
         labels = [n[0] for n in notes]
-        self.assertIn("weather", labels)
-        self.assertIn("reminders", labels)
+        self.assertNotIn("weather", labels)
+        self.assertNotIn("reminders", labels)
 
     def test_house_roster_in_boot(self) -> None:
         (self.home.cache / "ha-roster.md").write_text(

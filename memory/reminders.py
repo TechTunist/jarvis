@@ -1,4 +1,4 @@
-"""Timed reminders in the vault. Talk may speak one when due; boot still loads the file."""
+"""Timed reminders in the vault. Talk may speak one when due; the mouth recites them on a check-in or if asked."""
 from __future__ import annotations
 
 import json

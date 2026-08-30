@@ -68,13 +68,18 @@ DOCS_SYSTEM = (
     "Matt already chose. British English, room-by-room cloneable."
 )
 DISTILL_SYSTEM = (
-    "Extract durable household facts from this transcript. "
+    "Extract durable facts from this transcript. "
     "Ignore chit-chat, jokes, hellos, and one-off questions. "
-    'Return JSON only: {"facts": [{"dest": "household"|"never"|"daily"|"reminders", '
-    '"bullet": "one short fact"}]}. '
-    "household = lasting preferences and people. never = hard constraints. "
+    "Return JSON only: "
+    '{"facts":[{"dest":"household"|"never"|"daily"|"reminders"|"project",'
+    '"project":"<slug or empty>","bullet":"one short fact"}]}. '
+    "household = people, address, how they like to be spoken to, lighting prefs. "
+    "never = hard constraints. "
     "daily = only if it matters today and not later. "
     'reminders = timed items as "HH:MM daily - fact" or "YYYY-MM-DD HH:MM - fact". '
+    "project = engineering work (pergola, timber bench, room node, ESP kit, "
+    "electronics). Set project to a short slug (pergola, room-node). "
+    "Do not dump engineering into household. "
     'If nothing durable, {"facts": []}.'
 )
 IMAGINE_SYSTEM = (
@@ -132,6 +137,10 @@ def dest_path(home: JarvisHome, dest: str, today: date | None = None) -> Path | 
         return home.vault / "inbox.md"
     if dest == "reminders":
         return home.vault / "reminders.md"
+    if dest.startswith("project:"):
+        from memory.projects import project_path
+
+        return project_path(home, dest.split(":", 1)[1])
     return None
 
 
@@ -382,14 +391,19 @@ class HostWorker:
         return inspect(self.home, str(snap.get("prompt") or ""))
 
     def _bench(self, snap: dict) -> tuple[str, str]:
-        from memory.bench import _get, URL, api_ok, reason
+        from memory.bench import PROJECT_OPS, URL, WIRE_OPS, _get, api_ok, apply, parse_ops, reason
 
+        asked = str(snap.get("prompt") or "")
         scene: dict = {"parts": []}
         if api_ok():
             scene = _get(f"{URL}api/scene") or scene
+        ops = parse_ops(asked, scene)
+        kinds = {str(o.get("op") or "") for o in ops}
+        if kinds and kinds <= (PROJECT_OPS | WIRE_OPS):
+            return apply(self.home, asked)
         return reason(
             self.home,
-            str(snap.get("prompt") or ""),
+            asked,
             scene,
             self.complete or self._ask,
         )
@@ -645,10 +659,16 @@ class HostWorker:
         asked = search_prompt(self.home, prompt)
         speak = self._ask(asked, system=SEARCH_SYSTEM, web=True, max_turns=6, timeout=80)
         speak = " ".join(speak.split())
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         if re.search(r"weather|forecast", prompt, re.I):
             cache = self.home.cache / "weather.md"
             cache.parent.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            cache.write_text(f"{speak}\n\n_cached {stamp}_\n", encoding="utf-8")
+        from memory.brief import looks_like_news, news_path
+
+        if looks_like_news(prompt):
+            cache = news_path(self.home)
+            cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(f"{speak}\n\n_cached {stamp}_\n", encoding="utf-8")
         return speak, speak
 
@@ -754,7 +774,16 @@ class HostWorker:
                 if file_reminder(self.home, bullet):
                     written += 1
                 continue
-            dest_file = dest_path(self.home, dest)
+            if dest == "project" or dest.startswith("project:"):
+                from memory.projects import ensure_project_file, project_id
+
+                slug = dest.split(":", 1)[1] if dest.startswith("project:") else str(
+                    fact.get("project") or fact.get("name") or ""
+                )
+                slug = project_id(slug)
+                dest_file = ensure_project_file(self.home, slug)
+            else:
+                dest_file = dest_path(self.home, dest)
             if dest_file is None:
                 log(f"[workshop] distill skipped dest {dest!r}")
                 continue

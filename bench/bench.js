@@ -71,6 +71,8 @@ const group = new THREE.Group();
 scene.add(group);
 const siteGroup = new THREE.Group();
 scene.add(siteGroup);
+const wireGroup = new THREE.Group();
+scene.add(wireGroup);
 const overlay = new THREE.Scene();
 const gizmo = new THREE.Group();
 gizmo.renderOrder = 1000;
@@ -81,6 +83,148 @@ overlay.add(spinViz);
 const WOOD = 0xb58a4a;
 const WOOD_HOVER = 0xc9a56a;
 const WOOD_SEL = 0xdbb57a;
+const FINISH = {
+  wood: WOOD,
+  abs: 0x3a3f46,
+  lid: 0x5a616a,
+  devkit: 0x1e7a3a,
+  pcb: 0x1a5c32,
+  bms: 0x1b4d8c,
+  cell: 0x2a2a2a,
+  mems: 0xc0c4c8,
+  switch: 0x222222,
+  led: 0xcc3333,
+  usb: 0xc8ccd0,
+  brick: 0x111111,
+  metal: 0x8a9098,
+};
+
+function partColor(p) {
+  if (!p) return WOOD;
+  if (p.color) {
+    const s = String(p.color).replace("#", "").replace("0x", "");
+    const n = parseInt(s, 16);
+    if (!Number.isNaN(n)) return n;
+  }
+  const finish = String(p.finish || "").toLowerCase();
+  if (FINISH[finish]) return FINISH[finish];
+  const role = String(p.role || "").toLowerCase();
+  const name = String(p.name || "").toLowerCase();
+  if (role === "mcu" || name.includes("esp") || name.includes("devkit")) return FINISH.devkit;
+  if (role === "cell" || name.includes("18650")) return FINISH.cell;
+  if (role === "bms" || name.includes("tp4056") || name.includes("bms")) return FINISH.bms;
+  if (role === "mic" || name.includes("mems") || name.includes("mic")) return FINISH.mems;
+  if (role === "mute" || role === "switch" || name.includes("mute")) return FINISH.switch;
+  if (role === "led" || /\bled\b/.test(name)) return FINISH.led;
+  if (role === "usb" || name.includes("usb")) return FINISH.usb;
+  if (role === "enclosure" || name.includes("enclosure") || name.includes("box"))
+    return name.includes("lid") ? FINISH.lid : FINISH.abs;
+  if (name.includes("lid")) return FINISH.lid;
+  return WOOD;
+}
+
+function partSize(p) {
+  const L = p.length_mm || 100;
+  const W = p.width_mm || 40;
+  const T = p.thickness_mm || 15;
+  const up = !!p.upright;
+  return { sx: up ? T : L, sy: up ? L : T, sz: W };
+}
+
+function pinOffset(pin, span) {
+  const s = String(pin || "");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) >>> 0;
+  return ((h % 1000) / 1000 - 0.5) * span * 0.55;
+}
+
+function partDock(p, pin) {
+  const { sx, sy, sz } = partSize(p);
+  const x = p.x_mm || 0;
+  const y = p.y_mm || 0;
+  const z = p.z_mm || 0;
+  return new THREE.Vector3(
+    x + sx / 2 + pinOffset(pin || p.id, sx),
+    z + sy,
+    y + sz / 2 + pinOffset((pin || "") + "y", sz)
+  );
+}
+
+function wireCaption(w) {
+  const net = w.net || "net";
+  const a = w.from_pin || "";
+  const b = w.to_pin || "";
+  if (a && b) return net + "  " + a + " → " + b;
+  return net;
+}
+
+function wireLabel(text, color) {
+  const c = document.createElement("canvas");
+  c.width = 512;
+  c.height = 64;
+  const g = c.getContext("2d");
+  g.fillStyle = color || "#e8d5b0";
+  g.font = "600 28px sans-serif";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText(text, 256, 32);
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false, transparent: true })
+  );
+  sprite.scale.set(72, 9, 1);
+  sprite.renderOrder = 20;
+  return sprite;
+}
+
+function addWireSegment(a, b, mat) {
+  const dir = b.clone().sub(a);
+  const len = dir.length();
+  if (len < 0.2) return;
+  const geom = new THREE.CylinderGeometry(0.7, 0.7, len, 6);
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.copy(a).add(b).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  wireGroup.add(mesh);
+}
+
+function rebuildWires() {
+  while (wireGroup.children.length) {
+    const ch = wireGroup.children[0];
+    wireGroup.remove(ch);
+    ch.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) {
+        if (obj.material.map) obj.material.map.dispose();
+        obj.material.dispose();
+      }
+    });
+  }
+  const byId = {};
+  parts.forEach((p) => {
+    if (p && p.id) byId[p.id] = p;
+  });
+  wires.forEach((w, idx) => {
+    const a = byId[w.from];
+    const b = byId[w.to];
+    if (!a || !b) return;
+    const col = partColor({ color: w.color }) || 0x7f8c8d;
+    const mat = new THREE.MeshLambertMaterial({ color: col, emissive: col, emissiveIntensity: 0.15 });
+    const pa = partDock(a, w.from_pin || w.id);
+    const pb = partDock(b, w.to_pin || w.net);
+    const lift = Math.max(pa.y, pb.y) + 10 + idx * 3;
+    const aUp = pa.clone();
+    aUp.y = lift;
+    const bUp = pb.clone();
+    bUp.y = lift;
+    addWireSegment(pa, aUp, mat);
+    addWireSegment(aUp, bUp, mat);
+    addWireSegment(bUp, pb, mat);
+    const label = wireLabel(wireCaption(w), "#" + col.toString(16).padStart(6, "0"));
+    label.position.copy(aUp).add(bUp).multiplyScalar(0.5);
+    label.position.y += 4;
+    wireGroup.add(label);
+  });
+}
 const woodEdge = new THREE.LineBasicMaterial({ color: 0x5a3a18 });
 const wallMat = new THREE.MeshLambertMaterial({
   color: 0x6a5848,
@@ -94,6 +238,7 @@ const floorMat = new THREE.MeshLambertMaterial({
 });
 
 let parts = [];
+let wires = [];
 let site = {};
 let stock = [];
 let check = {};
@@ -124,6 +269,8 @@ let redoStack = [];
 let clip = null;
 let pasteN = 0;
 let mutating = false;
+let project = { id: "", name: "" };
+let projectList = [];
 const MIN_DIM = 1;
 const FACE_COL = 0xf0c060;
 const SNAP_DEG = 15;
@@ -344,6 +491,7 @@ function pruneSelection() {
 
 function tintMesh(mesh, mode) {
   const mat = mesh.material;
+  const base = partColor(parts[mesh.userData.idx]);
   if (mode === "sel") {
     mat.color.setHex(WOOD_SEL);
     mat.emissive.setHex(0x4a3010);
@@ -351,7 +499,7 @@ function tintMesh(mesh, mode) {
     mat.color.setHex(WOOD_HOVER);
     mat.emissive.setHex(0x2a1a08);
   } else {
-    mat.color.setHex(WOOD);
+    mat.color.setHex(base);
     mat.emissive.setHex(0x000000);
   }
 }
@@ -538,11 +686,149 @@ function clonePart(p) {
 function applyScene(s) {
   if (!s) return;
   if (Array.isArray(s.parts)) parts = s.parts;
+  if (Array.isArray(s.wires)) wires = s.wires;
   if (s.site) site = s.site;
   if (s.stock) stock = s.stock;
   if (s.check) check = s.check;
+  if (s.project) project = s.project;
+  if (Array.isArray(s.projects)) projectList = s.projects;
   rebuild();
+  renderProject();
 }
+
+function projectNameInput() {
+  return document.getElementById("project-name");
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderProject() {
+  const input = projectNameInput();
+  const list = document.getElementById("project-list");
+  const label = document.getElementById("project-saved-label");
+  const name = (project && project.name) || "";
+  if (input && document.activeElement !== input) input.value = name;
+  document.title = name ? "Bench — " + name : "Bench";
+  if (label) label.hidden = !projectList.length;
+  if (!list) return;
+  if (!projectList.length) {
+    list.innerHTML = "";
+    return;
+  }
+  const cur = (project && project.id) || "";
+  list.innerHTML = projectList
+    .map((p) => {
+      const id = esc(p.id || "");
+      const label = esc(p.name || p.id || "");
+      const n = p.parts != null ? p.parts : "";
+      const cls = p.id && p.id === cur ? "proj current" : "proj";
+      const dim = n === "" ? "" : `<div class="dim">${n} parts</div>`;
+      return `<div class="${cls}" data-id="${id}" data-name="${label}">${label}${dim}</div>`;
+    })
+    .join("");
+}
+
+async function applyOpsScene(data) {
+  if (!data || data.error || !data.scene) return false;
+  applyScene(data.scene);
+  return true;
+}
+
+async function saveProject() {
+  const input = projectNameInput();
+  const name = input ? input.value.trim() : "";
+  mutating = true;
+  try {
+    const op = { op: "save" };
+    if (name) op.as = name;
+    const data = await postOps([op]);
+    await applyOpsScene(data);
+  } catch (_) {
+  } finally {
+    mutating = false;
+  }
+}
+
+async function newProject() {
+  mutating = true;
+  try {
+    const data = await postOps([{ op: "new" }]);
+    undoStack = [];
+    redoStack = [];
+    selectedIds = [];
+    await applyOpsScene(data);
+  } catch (_) {
+  } finally {
+    mutating = false;
+  }
+}
+
+async function loadProject(name) {
+  if (!name) return;
+  mutating = true;
+  try {
+    const data = await postOps([{ op: "load", name }]);
+    undoStack = [];
+    redoStack = [];
+    selectedIds = [];
+    await applyOpsScene(data);
+  } catch (_) {
+  } finally {
+    mutating = false;
+  }
+}
+
+function loadNamed() {
+  const input = projectNameInput();
+  const typed = input ? input.value.trim() : "";
+  loadProject(typed || "previous");
+}
+
+function bindProjectUi() {
+  const saveBtn = document.getElementById("act-save");
+  const newBtn = document.getElementById("act-new");
+  const loadBtn = document.getElementById("act-load");
+  const input = projectNameInput();
+  const list = document.getElementById("project-list");
+  if (saveBtn && !saveBtn.dataset.bound) {
+    saveBtn.dataset.bound = "1";
+    saveBtn.addEventListener("click", saveProject);
+  }
+  if (newBtn && !newBtn.dataset.bound) {
+    newBtn.dataset.bound = "1";
+    newBtn.addEventListener("click", newProject);
+  }
+  if (loadBtn && !loadBtn.dataset.bound) {
+    loadBtn.dataset.bound = "1";
+    loadBtn.addEventListener("click", loadNamed);
+  }
+  if (input && !input.dataset.bound) {
+    input.dataset.bound = "1";
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveProject();
+        input.blur();
+      }
+    });
+  }
+  if (list && !list.dataset.bound) {
+    list.dataset.bound = "1";
+    list.addEventListener("click", (e) => {
+      const row = e.target.closest(".proj");
+      if (!row) return;
+      const ident = row.getAttribute("data-id") || row.getAttribute("data-name");
+      if (ident) loadProject(ident);
+    });
+  }
+}
+bindProjectUi();
 
 async function postOps(ops) {
   const resp = await fetch("/api/ops", {
@@ -1368,7 +1654,7 @@ function rebuild() {
     );
     const mesh = new THREE.Mesh(
       geom,
-      new THREE.MeshLambertMaterial({ color: WOOD, emissive: 0x000000 })
+      new THREE.MeshLambertMaterial({ color: partColor(p), emissive: 0x000000 })
     );
     mesh.position.set(sx / 2, sy / 2, sz / 2);
     mesh.userData.idx = idx;
@@ -1457,6 +1743,17 @@ function rebuild() {
         )
         .join("")
     : "Empty.";
+  const wiresBlock = document.getElementById("wires-block");
+  const wiresDim = document.getElementById("wires-dim");
+  if (wiresBlock && wiresDim) {
+    if (wires.length) {
+      wiresBlock.hidden = false;
+      wiresDim.textContent = wires
+        .map((w) => w.net || w.id)
+        .join(" · ");
+    } else wiresBlock.hidden = true;
+  }
+  rebuildWires();
   pruneSelection();
   applyTint();
   showInspect(selectedIndex());
@@ -1468,17 +1765,29 @@ async function poll() {
     const s = await (await fetch("/api/scene", { cache: "no-store" })).json();
     const next = {
       parts: s.parts || [],
+      wires: s.wires || [],
       site: s.site || {},
       stock: s.stock || [],
       check: s.check || {},
     };
-    const prev = { parts, site, stock, check };
+    const prev = { parts, wires, site, stock, check };
     if (JSON.stringify(next) !== JSON.stringify(prev)) {
       parts = next.parts;
+      wires = next.wires;
       site = next.site;
       stock = next.stock;
       check = next.check;
       rebuild();
+    }
+    const nextProject = s.project || { id: "", name: "" };
+    const nextList = s.projects || [];
+    if (
+      JSON.stringify(nextProject) !== JSON.stringify(project) ||
+      JSON.stringify(nextList) !== JSON.stringify(projectList)
+    ) {
+      project = nextProject;
+      projectList = nextList;
+      renderProject();
     }
     const cam = s.camera;
     if (cam && cam.rev != null && cam.rev > camRev) {
@@ -1744,8 +2053,13 @@ canvas.addEventListener("dblclick", (e) => {
   setEdit(idx);
 });
 addEventListener("keydown", (e) => {
-  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
   const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    saveProject();
+    return;
+  }
+  if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
   if (mod && e.key.toLowerCase() === "z") {
     e.preventDefault();
     if (e.shiftKey) redo();

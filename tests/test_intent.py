@@ -47,6 +47,14 @@ class ClassifyTests(unittest.TestCase):
             "How old are you Jarvis?",
             "Explain your capabilities.",
             "do you remember the information about the pergola i wanted to build",
+            "what should we do about the rafters",
+            "lets talk about the pergola",
+            "how do we splice the posts on the bench",
+            "how's it going",
+            "what's going on",
+            "what's happening",
+            "daily brief",
+            "fill me in",
         ):
             with self.subTest(text=text):
                 self.assertEqual(classify(text).kind, CHAT.kind)
@@ -176,7 +184,43 @@ class ClassifyTests(unittest.TestCase):
             BENCH.cap,
         )
         self.assertEqual(classify("can you open the bench please").cap, BENCH.cap)
+        self.assertIsNone(classify("lets talk about the pergola on the bench").cap)
+        self.assertIsNone(
+            classify(
+                "are you able to add detail to the home node electronics project "
+                "on bench, like how the components are wired together?"
+            ).cap
+        )
         self.assertEqual(classify("close the bench please").cap, BENCH.cap)
+        self.assertIsNone(classify("do we have an open project on bench").cap)
+        self.assertEqual(
+            classify("do we have an open project on bench").kind, CHAT.kind
+        )
+        self.assertEqual(classify("what's on the bench").kind, CHAT.kind)
+        self.assertEqual(classify("is the bench empty").kind, CHAT.kind)
+        self.assertEqual(
+            classify("save this as the pergola so I can work on a new one").cap,
+            BENCH.cap,
+        )
+        self.assertIsNone(
+            classify("hi jarvis, can se start an electornics project on bench?").cap
+        )
+        self.assertEqual(
+            classify("can we start an electronics project on the bench").kind,
+            CHAT.kind,
+        )
+        self.assertIsNone(
+            classify("lets work on a room node. what esp devices do we have on file?").cap
+        )
+        self.assertEqual(
+            classify(
+                "that is a pdf, but lets see what it all looks like in 3d form in bench"
+            ).cap,
+            BENCH.cap,
+        )
+        junk = "hi jarvis, can se start an electornics \x1b[D\x1b[Dproject on bench?"
+        self.assertEqual(classify(junk).kind, CHAT.kind)
+        self.assertIsNone(classify(junk).cap)
         self.assertEqual(
             classify("lets stop the bench right now. I want to do something else").cap,
             BENCH.cap,
@@ -339,6 +383,12 @@ class EnqueueTests(unittest.TestCase):
         )
         hit = maybe_enqueue("Look up the Premier League table", self.board, self.reg)
         self.assertIsNotNone(hit)
+
+    def test_fresh_news_stays_on_the_mouth(self) -> None:
+        self.reg.advertise("host", ["search"])
+        (self.home.cache / "news.md").write_text("SPCX quiet.\n", encoding="utf-8")
+        self.assertIsNone(maybe_enqueue("what are the headlines", self.board, self.reg))
+        self.assertIsNone(maybe_enqueue("how's it going", self.board, self.reg))
 
     def test_imagine_enqueue_marks_video(self) -> None:
         self.reg.advertise("host", ["imagine"])

@@ -140,14 +140,25 @@ def run_unittests(
     return speak_tests(proc.returncode, proc.stdout or "", proc.stderr or "")
 
 
+_PLAN_SPEAK = re.compile(
+    r"(?:I(?:'ll| will) (?:check|read|see|look|add)|Next I(?:'ll| will)|"
+    r"No \w+ (?:primitive |in the API )?yet|I'll read how)",
+    re.I,
+)
+
+
 def speak_from_grok(raw: str) -> tuple[str, str]:
     data = extract_json(raw)
     if isinstance(data, dict):
         speak = " ".join(str(data.get("speak") or "").split())
         branch = str(data.get("branch") or "").strip()
         if speak:
+            if _PLAN_SPEAK.search(speak) and not data.get("ok"):
+                return "I started that and didn't finish, sir.", "done"
             return speak, branch or ("ok" if data.get("ok") else "done")
     text = " ".join((raw or "").split())
+    if text and _PLAN_SPEAK.search(text):
+        return "I started that and didn't finish, sir.", "done"
     if text:
         return text[:280], "done"
     return "That's done, sir.", "done"

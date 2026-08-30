@@ -1,6 +1,6 @@
 # Jarvis vault
 
-This folder is the filing cabinet, not the live chat. Talk only loads `BOOT.md` plus today’s (and maybe yesterday’s) daily note. Everything else is for a workbench to read on demand.
+This folder is the filing cabinet, not the live chat. Talk loads `BOOT.md`, today/yesterday, household, and a short project index. `calendar.md`, reminders, and the weather/news caches are the daily brief — Jarvis only uses that on a check-in or if you ask. Matching `projects/*.md` pages are given to the mouth when Matt names that work. Everything else is for a workbench to read on demand.
 
 This directory is meant to be a **private git repo**. After the first Talk run:
 

@@ -1,6 +1,7 @@
 """Session working memory: weather place + recent turns, not the whole vault."""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,6 +20,7 @@ from memory.working import (
     weather_place,
     workshop_brief,
 )
+from memory.bench import bench_note
 
 
 class WorkingMemoryTests(unittest.TestCase):
@@ -32,6 +34,79 @@ class WorkingMemoryTests(unittest.TestCase):
             "- Home weather location is Canterbury, Kent, UK\n",
             encoding="utf-8",
         )
+
+    def test_bench_note_is_on_the_mouth(self) -> None:
+        dest = self.home.root / "bench"
+        dest.mkdir(parents=True)
+        (dest / "scene.json").write_text(
+            json.dumps(
+                {
+                    "units": "mm",
+                    "parts": [
+                        {"id": "p1", "name": "post 1"},
+                        {"id": "p2", "name": "rafter 1"},
+                    ],
+                    "project": {"id": "pergola", "name": "pergola"},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (dest / "projects.json").write_text(
+            json.dumps(
+                {
+                    "current": "pergola",
+                    "previous": "",
+                    "projects": [{"id": "pergola", "name": "pergola", "parts": 2}],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        note = bench_note(self.home)
+        self.assertIn("pergola", note.lower())
+        self.assertIn("2 parts", note)
+        pre = desk_prefix(self.home)
+        self.assertIn("[bench]", pre)
+        self.assertIn("pergola", pre.lower())
+        self.assertIn("[kit]", pre)
+        self.assertIn("ESP32-S3-DevKitC-1", pre)
+        named = desk_prefix(self.home, asked="the pallet pergola rafters")
+        self.assertIn("[projects]", named)
+        self.assertIn("[project:pergola]", named)
+        node = desk_prefix(self.home, asked="what ESP devices do we have for the room node")
+        self.assertIn("[project:room-node]", node)
+        self.assertIn("DevKitC-1", node)
+
+    def test_daily_brief_only_on_checkin(self) -> None:
+        from datetime import date
+
+        from memory.brief import assemble_brief, wants_brief
+
+        (self.home.cache / "weather.md").write_text(
+            "Fair in Canterbury.\n\n_cached 2026-08-29 10:00 UTC_\n",
+            encoding="utf-8",
+        )
+        (self.home.vault / "calendar.md").write_text(
+            f"- {date.today().isoformat()} - Dentist 09:00\n",
+            encoding="utf-8",
+        )
+        body = assemble_brief(self.home)
+        self.assertIn("Fair in Canterbury", body)
+        self.assertIn("Dentist", body)
+        self.assertIn("20:00 daily", body)
+        self.assertTrue(wants_brief("how are you"))
+        self.assertTrue(wants_brief("what's going on"))
+        self.assertTrue(wants_brief("anything I should know"))
+        self.assertFalse(wants_brief("hello jarvis"))
+        self.assertFalse(wants_brief("lamp on"))
+        self.assertFalse(wants_brief("what are the headlines"))
+        hello = desk_prefix(self.home, asked="hello jarvis")
+        self.assertNotIn("[brief]", hello)
+        self.assertNotIn("Dentist", hello)
+        check = desk_prefix(self.home, asked="how are you")
+        self.assertIn("[brief]", check)
+        self.assertIn("Dentist", check)
 
     def test_weather_place_and_search_prompt(self) -> None:
         self.assertEqual(weather_place(self.home), "Canterbury, Kent, UK")

@@ -89,6 +89,7 @@ class JarvisHome:
             ".gitignore": self.vault / ".gitignore",
             "people/_household.md": self.vault / "people" / "_household.md",
             "reminders.md": self.vault / "reminders.md",
+            "calendar.md": self.vault / "calendar.md",
             "secrets-README.md": self.secrets / "README.md",
         }
         for rel, dest in mapping.items():
@@ -96,6 +97,15 @@ class JarvisHome:
             if src.is_file() and not dest.exists():
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        proj_src = TEMPLATES / "projects"
+        proj_dest = self.vault / "projects"
+        if proj_src.is_dir():
+            for src in proj_src.iterdir():
+                if not src.is_file():
+                    continue
+                dest = proj_dest / src.name
+                if not dest.exists():
+                    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         _maybe_git_init(self.vault)
 
     def take_lease(self, pid: int) -> str | None:

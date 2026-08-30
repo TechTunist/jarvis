@@ -1348,7 +1348,9 @@ class Desk:
     def handle_batch(self, items: list[tuple[str, int | None]]) -> dict:
         """Answer only the latest user line. Older queued lines are dropped."""
         items = latest_wins(items)
-        texts = [" ".join((t or "").split()) for t, _ in items]
+        from memory.intent import scrub_utterance
+
+        texts = [scrub_utterance(t) for t, _ in items]
         texts = [t for t in texts if t and t not in ("__quit__", "__quiet__")]
         if not texts:
             return {"reply": ""}
@@ -1426,7 +1428,7 @@ class Desk:
             from memory.working import desk_prefix
 
             prompt = text
-            pre = desk_prefix(self.board.home, person=self.speaker)
+            pre = desk_prefix(self.board.home, person=self.speaker, asked=text)
             if pre:
                 who = getattr(self.speaker, "name", None) or "They"
                 prompt = pre + f"\n\n{who}: " + prompt

@@ -101,6 +101,13 @@ class WorkerTests(unittest.TestCase):
         weather = (self.home.cache / "weather.md").read_text(encoding="utf-8")
         self.assertIn("Rain later", weather)
 
+    def test_search_caches_news(self) -> None:
+        jid = self.board.enqueue("search", "what are the headlines")
+        self.worker.advertise()
+        self.assertTrue(self.worker.tick())
+        news = (self.home.cache / "news.md").read_text(encoding="utf-8")
+        self.assertIn("Rain later", news)
+
     def test_remember_appends_household(self) -> None:
         jid = self.board.enqueue(
             "vault-write",
@@ -164,6 +171,40 @@ class WorkerTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("Prefers tea at five", household)
+
+    def test_distill_files_engineering_to_a_project(self) -> None:
+        log = SessionLog.start(self.home)
+        log.record(
+            "three uprights at 333mm in the alley pergola",
+            "On the bench, sir.",
+        )
+        log.close()
+
+        def complete(prompt: str, **kwargs) -> str:
+            if "Transcript:" in prompt:
+                return json.dumps(
+                    {
+                        "facts": [
+                            {
+                                "dest": "project",
+                                "project": "pergola",
+                                "bullet": "Three uprights at 333 mm centres.",
+                            }
+                        ]
+                    }
+                )
+            return fake_complete(prompt, **kwargs)
+
+        worker = HostWorker(self.home, worker_id="host-distill-proj", complete=complete)
+        jid = self.board.enqueue("distill", "file facts", path=str(log.path))
+        self.assertTrue(worker.tick())
+        self.assertEqual(self.board.latest_status(jid), "done")
+        body = (self.home.vault / "projects" / "pergola.md").read_text(encoding="utf-8")
+        self.assertIn("333 mm", body)
+        household = (self.home.vault / "people" / "_household.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("333 mm", household)
 
     def test_heartbeat_has_caps(self) -> None:
         self.worker.advertise()

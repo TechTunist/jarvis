@@ -19,7 +19,7 @@ from memory.prompt import HANDS_RULES
 
 PORT = 8770
 URL = f"http://127.0.0.1:{PORT}/"
-API = 4
+API = 7
 _DIMS = re.compile(
     r"(\d+(?:\.\d+)?)\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*"
     r"(\d+(?:\.\d+)?)\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*"
@@ -59,7 +59,7 @@ _DEL_N = re.compile(
 )
 _OPEN = re.compile(
     r"(?:"
-    r"\b(?:open|show|bring up)\b.{0,40}\bbench\b"
+    r"\b(?:open|show|bring up)\s+(?:the\s+|a\s+)?(?:mm\s+|millimet(?:er|re)\s+)?bench\b"
     r"|\b(?:work on|working on)\b.{0,24}\bbench\b"
     r"|\bbench\b.{0,40}\b(?:open|tab|window|browser)"
     r"|\b(?:browser\s+)?tab\b.{0,40}\bbench\b"
@@ -73,6 +73,74 @@ _CLOSE = re.compile(
     r")",
     re.I,
 )
+_SAVE_PROJECT = re.compile(
+    r"(?:"
+    r"\bsave\b.{0,40}\b(?:this|it|project|bench|work|current)\b"
+    r"|\b(?:save|keep)\s+(?:the\s+)?(?:current\s+)?(?:bench\s+)?project\b"
+    r"|\bkeep this\b"
+    r")",
+    re.I,
+)
+_SAVE_AS = re.compile(
+    r"\b(?:save|keep|call|name)\b.{0,48}\b(?:as|named|called)\s+(?:the\s+|my\s+)?(.+)$",
+    re.I,
+)
+_CALLED = re.compile(
+    r"\b(?:project|one)\s+(?:called|named)\s+(?:the\s+|my\s+)?(.+)$",
+    re.I,
+)
+_NEW_PROJECT = re.compile(
+    r"(?:"
+    r"\b(?:start|begin|make|create)\s+a\s+new\s+project\b"
+    r"|\bnew\s+(?:bench\s+)?project\b"
+    r"|\bwork on a new (?:one|project)\b"
+    r"|\banother project\b"
+    r"|\bstart a new bench\b"
+    r")",
+    re.I,
+)
+_LOAD_PROJECT = re.compile(
+    r"(?:"
+    r"\b(?:go back|switch back|come back)\b"
+    r"|\b(?:load|switch to|bring back|back to)\b"
+    r"|\bopen\s+(?:the\s+)?(?:project\s+)?.+"
+    r")",
+    re.I,
+)
+_LOAD_TO = re.compile(
+    r"\b(?:go back to|switch(?: back)? to|load|open|bring back|back to)\s+(?:the\s+|my\s+)?(.+)$",
+    re.I,
+)
+_LIST_PROJECTS = re.compile(
+    r"(?:"
+    r"\b(?:list|what|which|show)\b.{0,24}\bprojects\b"
+    r"|\bsaved projects\b"
+    r")",
+    re.I,
+)
+_PROJECT_TRAIL = re.compile(
+    r"\s+on(?: the)? bench\.?$"
+    r"|[\s,]+(?:project|bench|please|for now)\.?$"
+    r"|\s+so i can\b.*$"
+    r"|\s+and(?: then)?\s+(?:start|work|open|make|begin)\b.*$",
+    re.I,
+)
+_PROJECT_ALIAS = {
+    "first": "first",
+    "first one": "first",
+    "first project": "first",
+    "previous": "previous",
+    "previous one": "previous",
+    "previous project": "previous",
+    "other": "previous",
+    "other one": "previous",
+    "other project": "previous",
+    "last": "previous",
+    "last one": "previous",
+    "last project": "previous",
+}
+PROJECT_OPS = frozenset({"save", "new", "load", "list_projects"})
+WIRE_OPS = frozenset({"wire", "wire_kit", "wire_room_node", "connect", "set_wires"})
 _BENCH_PY = Path(__file__).resolve().parent.parent / "bench" / "bench.py"
 BENCH_SYSTEM = (
     HANDS_RULES
@@ -84,6 +152,9 @@ BENCH_SYSTEM = (
     "Camera look-at is millimetres (x along, y across, z up) on scene.camera. "
     "Pan: POST /api/ops {\"ops\":[{\"op\":\"pan\",\"dx_mm\":200}]}. "
     "Look at a board: {\"op\":\"look_at\",\"n\":3}. Frame all: {\"op\":\"frame\"}. "
+    "Projects: one live scene. Save then start new to put the current work aside; load to go back. "
+    "POST /api/ops save {\"as\":\"pergola\"}, new, load {\"name\":\"pergola\" or \"previous\" or \"first\"}, "
+    "list_projects. GET /api/projects. Do not clear to switch — that throws the work away. "
     "If it is down, start it. If he wants a window, open one (DISPLAY=:0 if unset). "
     "If he wants it closed or stopped, kill the process and confirm health fails — "
     "that is close; do not recite the parts list. "
@@ -198,6 +269,79 @@ def healthy() -> bool:
     return _get(f"{URL}api/scene") is not None
 
 
+def bench_note(home: JarvisHome, *, limit: int = 420) -> str:
+    """Live millimetre bench for the mouth. Files only — no HTTP, no start."""
+    root = home.root / "bench"
+    scene: dict = {"parts": []}
+    dest = root / "scene.json"
+    if dest.is_file():
+        try:
+            data = json.loads(dest.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("parts"), list):
+                scene = data
+        except (OSError, json.JSONDecodeError):
+            pass
+    parts = list(scene.get("parts") or [])
+    proj = scene.get("project") if isinstance(scene.get("project"), dict) else {}
+    name = str(proj.get("name") or "").strip()
+    saved: list[str] = []
+    idx_path = root / "projects.json"
+    if idx_path.is_file():
+        try:
+            idx = json.loads(idx_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            idx = {}
+        if isinstance(idx, dict):
+            if not name:
+                cur = str(idx.get("current") or "")
+                for row in idx.get("projects") or []:
+                    if isinstance(row, dict) and str(row.get("id") or "") == cur:
+                        name = str(row.get("name") or cur).strip()
+                        break
+            for row in idx.get("projects") or []:
+                if not isinstance(row, dict):
+                    continue
+                label = str(row.get("name") or row.get("id") or "").strip()
+                if label:
+                    saved.append(label)
+    bits: list[str] = []
+    if name:
+        bits.append(f"Current project: {name}.")
+    elif parts:
+        bits.append("Current project: untitled.")
+    else:
+        bits.append("The bench is empty.")
+    if parts:
+        labels = [str(p.get("name") or p.get("id") or "part") for p in parts[:6]]
+        extra = len(parts) - len(labels)
+        roster = ", ".join(labels)
+        if extra > 0:
+            roster += f", +{extra} more"
+        bits.append(f"{len(parts)} parts ({roster}).")
+    if saved:
+        bits.append("Saved: " + ", ".join(saved) + ".")
+    else:
+        bits.append("No saved projects.")
+    text = " ".join(bits)
+    if len(text) > limit:
+        return text[: max(0, limit - 1)].rstrip() + "…"
+    return text
+
+
+KIT_NOTE = (
+    "Room-node kit on file (millimetre envelopes, not every ESP ever made): "
+    "ESP32-S3-DevKitC-1 (~63×25 mm, official drawing), MEMS capsule, 18650 cell, "
+    "TP4056/BMS, USB-C, mute switch, status LED, a simple enclosure. "
+    "If they start electronics and have not named parts, ask what it is for and "
+    "what they have. Do not write a PDF. Do not place parts until they want them "
+    "on the bench."
+)
+
+
+def kit_note() -> str:
+    return KIT_NOTE
+
+
 def ensure_server(home: JarvisHome) -> bool:
     """True if a new process was started."""
     if api_ok():
@@ -270,17 +414,86 @@ def _board_n(text: str, default: int | None = None) -> int | None:
     return default
 
 
+def _clean_project_name(name: str) -> str:
+    n = " ".join((name or "").split()).strip(" .,'\"")
+    n = _PROJECT_TRAIL.sub("", n).strip(" .,'\"")
+    n = re.sub(r"^(?:the|my|our|this|that)\s+", "", n, flags=re.I)
+    n = n.strip(" .,'\"")
+    if n.lower() in {"the", "this", "it", "a", "my", "project", "bench", "one"}:
+        return ""
+    return n
+
+
+def parse_project_name(text: str) -> str:
+    raw = " ".join((text or "").split())
+    hit = _SAVE_AS.search(raw) or _CALLED.search(raw) or _LOAD_TO.search(raw)
+    if not hit:
+        return ""
+    return _clean_project_name(hit.group(1))
+
+
+def parse_project_ops(asked: str) -> list[dict]:
+    """Save / new / load / list. Empty means this is not a project command."""
+    raw = " ".join((asked or "").split())
+    if not raw:
+        return []
+    if _LIST_PROJECTS.search(raw):
+        return [{"op": "list_projects"}]
+    saving = bool(_SAVE_PROJECT.search(raw) or _SAVE_AS.search(raw))
+    new = bool(_NEW_PROJECT.search(raw))
+    loading = bool(_LOAD_PROJECT.search(raw)) and not wants_open(raw)
+    if not (saving or new or loading):
+        return []
+    name = parse_project_name(raw)
+    alias = _PROJECT_ALIAS.get(name.lower()) if name else None
+    ops: list[dict] = []
+    if saving:
+        op: dict = {"op": "save"}
+        if name and not alias:
+            op["as"] = name
+        ops.append(op)
+    if new:
+        op = {"op": "new"}
+        called = _CALLED.search(raw)
+        if called:
+            named = _clean_project_name(called.group(1))
+            if named and named.lower() not in _PROJECT_ALIAS:
+                op["as"] = named
+        ops.append(op)
+        return ops
+    if loading and not saving:
+        op = {"op": "load"}
+        if alias:
+            op["name"] = alias
+        elif name:
+            op["name"] = name
+        else:
+            op["name"] = "previous"
+        ops.append(op)
+    return ops
+
+
 def parse_ops(asked: str, scene: dict) -> list[dict]:
     """Deterministic CAD ops. Empty means ask the hands model or report the scene."""
     from bench.design import is_design_request
 
     raw = " ".join((asked or "").split())
+    project = parse_project_ops(raw)
+    if project:
+        return project
     if is_design_request(raw):
         return []
     parts = list(scene.get("parts") or [])
     ops: list[dict] = []
     if re.search(r"\bclear(?:\s+the)?\s+bench\b|\bempty the bench\b", raw, re.I):
         return [{"op": "clear"}]
+    if re.search(
+        r"\b(?:wire|wiring|wired together|how (?:they|the components) (?:are )?wired|"
+        r"connect(?:ions)? between|show the (?:wires|wiring))\b",
+        raw,
+        re.I,
+    ) and parts:
+        return [{"op": "wire_kit"}]
     if wants_delete(raw):
         hit = _DEL_N.search(raw)
         n = int(hit.group(1)) if hit else _board_n(raw)
@@ -468,8 +681,11 @@ def apply(
         close_server()
         return "The bench is closed, sir.", "closed"
 
-    planned = None if wants_close(raw) else _design_ops(raw, scene)
-    ops = [] if planned is not None else parse_ops(raw, scene)
+    ops = parse_ops(raw, scene)
+    project_hit = bool(ops) and str(ops[0].get("op") or "") in PROJECT_OPS
+    planned = None if wants_close(raw) or project_hit else _design_ops(raw, scene)
+    if planned is not None:
+        ops = []
     cad = bool(ops) or (
         planned is not None
         and planned[2] in {"design", "stock", "need-stock", "need-site"}

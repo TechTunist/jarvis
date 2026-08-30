@@ -127,6 +127,14 @@ def with_ack(intent: Intent) -> Intent:
         return intent
     return replace(intent, ack=pick_ack(intent))
 
+_CSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def scrub_utterance(text: str) -> str:
+    """Drop Home/arrow junk so it never reaches classify or the job prompt."""
+    return " ".join(_CSI.sub("", text or "").split())
+
+
 _HUSH = re.compile(
     r"(?:"
     r"\bbe\s+quiet\b"
@@ -246,6 +254,62 @@ _BENCH = re.compile(
     r"|\b(?:wood|timber|board|plank|shape|bench)\b.{0,80}\b(?:3d|three[- ]dimensional)\s+model\b"
     r"|\b\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\b"
     r"|\b\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\s+by\s+\d+(?:\.\d+)?\s*(?:mm|millimet(?:er|re)s?)?\b"
+    r")",
+    re.I,
+)
+_BENCH_QUERY = re.compile(
+    r"(?:"
+    r"\b(?:do we have|have we got|have i got|is there|are there)\b"
+    r".{0,48}\b(?:an?\s+)?(?:open\s+)?projects?\b"
+    r"|"
+    r"\b(?:do we have|have we got|is there|anything)\b.{0,32}\bon\s+(?:the\s+)?bench\b"
+    r"|"
+    r"\bwhat(?:'s|s| is| have we got)?\s+on\s+(?:the\s+)?bench\b"
+    r"|"
+    r"\bis\s+(?:the\s+)?bench\s+(?:empty|open|running|up|down|clear)\b"
+    r"|"
+    r"\bwhich project\b"
+    r"|"
+    r"\b(?:current|saved|open)\s+projects?\b"
+    r"|"
+    r"\bany(?:thing)?\s+(?:on|saved on)\s+(?:the\s+)?bench\b"
+    r"|"
+    r"\b(?:what|which)\s+projects?\b.{0,24}\b(?:saved|on file|on the bench|on bench)\b"
+    r")",
+    re.I,
+)
+_BENCH_ACT = re.compile(
+    r"(?:"
+    r"\b(?:open|show|bring up|close|stop|quit|kill)\s+(?:the\s+|a\s+)?bench\b"
+    r"|\bsave\b.{0,40}\b(?:this|it|project|bench|work)\b"
+    r"|\b(?:start|begin)\s+a\s+new\s+project\b"
+    r"|\bnew\s+(?:bench\s+)?project\b"
+    r"|\b(?:load|go back|switch)\b"
+    r"|\b(?:add|create|make|design|build|delete|remove|duplicate|stand|clear)\b"
+    r")",
+    re.I,
+)
+_ELECTRONICS_START = re.compile(
+    r"(?:"
+    r"\b(?:start|begin|work on)\b.{0,48}\b(?:an?\s+)?(?:elec\w*|circuit(?:ry)?)\s+projects?\b"
+    r"|\b(?:elec\w*|circuit(?:ry)?)\s+project\b"
+    r")",
+    re.I,
+)
+_PLACE_KIT = re.compile(
+    r"(?:"
+    r"\b(?:put|place|add|lay(?:out)?)\b.{0,48}\b(?:on (?:the )?bench|in bench)\b"
+    r"|\bin 3d form\b"
+    r"|\blooks? like in 3d\b"
+    r"|\bmodel (?:it|them|the kit|the parts)\b"
+    r")",
+    re.I,
+)
+_ON_FILE = re.compile(
+    r"(?:"
+    r"\b(?:what|which|any)\b.{0,40}\b(?:on file|have we got|do we have)\b"
+    r"|\b(?:esp|esp32|devices?|parts?|components?|kit)\b.{0,32}\bon file\b"
+    r"|\bwhat .{0,24}\besp\b"
     r")",
     re.I,
 )
@@ -439,16 +503,60 @@ _HOME_ACT = re.compile(
     r"kill|cut)\b",
     re.I,
 )
+_QUESTION = re.compile(
+    r"(?:"
+    r"\?"
+    r"|^(?:please\s+)?(?:what|who|where|when|how|why|which)\b"
+    r"|\b(?:do we have|have we got|is there|are there)\b"
+    r"|\b(?:can we|could we|should we)\b"
+    r")",
+    re.I,
+)
+_WORK = re.compile(
+    r"(?:"
+    r"\b(?:add\s+(?:a\s+|the\s+)?(?:board|part|plate|wire|box|\d+)|put|place|save|load|delete|remove|draw|paint|render|animate|"
+    r"create|make|generate|design|build|stand|"
+    r"remember|remind|search|google|look(?:ing)?\s+up|"
+    r"implement|patch|run the tests|write|draft)\b"
+    r"|\b(?:open|show|bring up|close|stop)\s+(?:the\s+)?bench\b"
+    r"|\bturn(?:ing)?\s+(?:on|off|the)\b"
+    r")",
+    re.I,
+)
+_IDEA_TALK = re.compile(
+    r"\b(?:let'?s talk|talk about|discuss|thinking about|what if we|maybe we should)\b",
+    re.I,
+)
 
 
 def classify(text: str) -> Intent:
     """High-precision regex. Prefer chat over a wrong hands job."""
-    raw = " ".join((text or "").split())
+    raw = scrub_utterance(text)
     if len(raw) < 2:
         return CHAT
     if _HUSH.search(raw):
         return HUSH
     if _RECALL.search(raw):
+        return CHAT
+    if re.search(r"\bare you able\b", raw, re.I) and not _WORK.search(raw):
+        return CHAT
+    if _ELECTRONICS_START.search(raw) and not _PLACE_KIT.search(raw) and not _BENCH_MUTATE.search(raw):
+        return CHAT
+    if _BENCH_QUERY.search(raw) and not _BENCH_ACT.search(raw):
+        return CHAT
+    if _ON_FILE.search(raw) and not _DOCS.search(raw):
+        return CHAT
+    from memory.brief import wants_checkin
+
+    if wants_checkin(raw):
+        return CHAT
+    if _STATUS.search(raw):
+        return STATUS
+    if (
+        (_QUESTION.search(raw) or _IDEA_TALK.search(raw))
+        and not _WORK.search(raw)
+        and (_BENCH.search(raw) or _BENCH_MUTATE.search(raw))
+    ):
         return CHAT
     if _BENCH.search(raw) or _BENCH_MUTATE.search(raw):
         return BENCH
@@ -458,8 +566,6 @@ def classify(text: str) -> Intent:
         return CHAT
     if _HOME.search(raw):
         return HOME
-    if _STATUS.search(raw):
-        return STATUS
     if is_reply_not_request(raw):
         return CHAT
     if _IMAGINE.search(raw):
@@ -510,13 +616,15 @@ def resolve_intents(
     from memory.route import obvious_chat
 
     del grok, model, run
-    raw = " ".join((text or "").split())
+    raw = scrub_utterance(text)
     fast = classify(raw)
     if fast.kind in {"status", "hush"}:
         return [fast]
     if _RECALL.search(raw):
         return [CHAT]
     if obvious_chat(raw) and not fast.cap:
+        return [CHAT]
+    if not fast.cap:
         return [CHAT]
     if fast.cap == "vault-write":
         return [fast]
@@ -542,6 +650,7 @@ def resolve_intents(
     if _FORGE.search(raw):
         found.append(FORGE)
     if _SEARCH.search(raw):
+        from memory.brief import looks_like_news, news_fresh
         from memory.working import looks_like_weather, weather_fresh
 
         if (
@@ -554,6 +663,8 @@ def resolve_intents(
                 re.I,
             )
         ):
+            pass
+        elif looks_like_news(raw) and home is not None and news_fresh(home):
             pass
         else:
             found.append(SEARCH)

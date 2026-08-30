@@ -59,6 +59,14 @@ class ShellDomainTests(unittest.TestCase):
         self.assertEqual(speak, "3 tests failed, sir.")
         self.assertEqual(result, "fail:3")
 
+    def test_speak_from_grok_drops_a_planning_dump(self) -> None:
+        speak, result = speak_from_grok(
+            "I'll check the bench API first. Next I'll see whether the API already has wires. "
+            "No wire primitive in the API yet. I'll read how parts are stored."
+        )
+        self.assertIn("didn't finish", speak.lower())
+        self.assertEqual(result, "done")
+
     def test_speak_from_grok_json(self) -> None:
         speak, result = speak_from_grok(
             json.dumps(

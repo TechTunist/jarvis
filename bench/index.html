@@ -83,12 +83,70 @@
     #actions button:hover:not(:disabled) { border-color: #f0c060; color: #f0c060; }
     #actions button:disabled { opacity: 0.35; cursor: default; }
     #actions button.danger:hover:not(:disabled) { border-color: #cc6666; color: #ff8888; }
+    #project-block {
+      margin: 0 0 10px; padding: 0 0 10px;
+      border-bottom: 1px solid #3a2a18;
+    }
+    #project-block .k { display: block; opacity: 0.75; margin: 0 0 4px; }
+    #project-name {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      margin: 0 0 6px;
+      padding: 4px 6px;
+      border: 1px solid #8a6a3a;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.28);
+      color: #e8d5b0;
+      font: inherit;
+      font-weight: 600;
+    }
+    #project-name:focus { outline: none; border-color: #f0c060; }
+    #project-acts {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
+      margin: 0 0 6px;
+    }
+    #project-acts button {
+      font: inherit;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: #e8d5b0;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid #8a6a3a;
+      border-radius: 6px;
+      padding: 7px 8px;
+      cursor: pointer;
+    }
+    #project-acts button:hover { border-color: #f0c060; color: #f0c060; }
+    #project-list .proj {
+      margin: 0; padding: 4px 0;
+      border-top: 1px solid #3a2a18;
+      cursor: pointer;
+      text-align: left;
+    }
+    #project-list .proj:first-child { border-top: 0; }
+    #project-list .proj:hover { color: #f0c060; }
+    #project-list .proj.current { color: #f0c060; }
+    #project-list .dim { font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
   <div id="panel">
     <h1>BENCH</h1>
-    <p>Millimetres. Left-drag orbit · right-drag or Shift-drag pan · scroll zoom · click a board · Shift-click add to a selection · grab an axis to move all selected · Shift-drag free · double-click push/pull · R rotate · Cut Copy Paste Delete · Ctrl-Z undo.</p>
+    <div id="project-block">
+      <span class="k">Project</span>
+      <input id="project-name" type="text" spellcheck="false" autocomplete="off" placeholder="untitled" />
+      <div id="project-acts">
+        <button type="button" id="act-save" title="Ctrl-S">Save</button>
+        <button type="button" id="act-new">New</button>
+        <button type="button" id="act-load" title="Load the name above, or the previous project">Load</button>
+      </div>
+      <span class="k" id="project-saved-label">Saved — click to load</span>
+      <div id="project-list"></div>
+    </div>
+    <p>Millimetres. Left-drag orbit · right-drag or Shift-drag pan · scroll zoom · click a board · Shift-click add to a selection · grab an axis to move all selected · Shift-drag free · double-click push/pull · R rotate · Cut Copy Paste Delete · Ctrl-Z undo · Ctrl-S save.</p>
     <p>Axes: <span style="color:#ff6666">X along</span> · <span style="color:#55dd66">Y across</span> · <span style="color:#77aaff">Z up</span></p>
     <div id="site-block" hidden>
       <div class="part"><strong>Site</strong><div class="dim" id="site-dim"></div></div>
@@ -98,6 +156,9 @@
     </div>
     <div id="stock-block" hidden>
       <div class="part"><strong>Stock</strong><div class="dim" id="stock-dim"></div></div>
+    </div>
+    <div id="wires-block" hidden>
+      <div class="part"><strong>Wires</strong><div class="dim" id="wires-dim"></div></div>
     </div>
     <div id="list">Empty.</div>
   </div>

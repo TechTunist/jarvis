@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -22,6 +23,7 @@ from memory.bench import (
     parse_board,
     parse_length,
     parse_ops,
+    parse_project_ops,
     wants_close,
     wants_delete,
     wants_open,
@@ -106,6 +108,20 @@ class ParseBoardTests(unittest.TestCase):
         self.assertIn("function toggleSelect", js)
         self.assertIn("Shift-click", html)
         self.assertIn("beginMoveDrag", js)
+        self.assertIn('id="project-name"', html)
+        self.assertIn('id="act-save"', html)
+        self.assertIn('id="act-new"', html)
+        self.assertIn('id="act-load"', html)
+        self.assertIn("Saved — click to load", html)
+        self.assertIn("function saveProject", js)
+        self.assertIn("function loadProject", js)
+        self.assertIn('op: "save"', js)
+        self.assertIn('op: "new"', js)
+        self.assertIn('op: "load"', js)
+        self.assertIn("function partColor", js)
+        self.assertIn("FINISH", js)
+        self.assertIn("function rebuildWires", js)
+        self.assertIn('id="wires-block"', html)
 
     def test_x_and_by(self) -> None:
         self.assertEqual(parse_board("1600x70x15mm"), (1600.0, 70.0, 15.0))
@@ -130,9 +146,46 @@ class ParseBoardTests(unittest.TestCase):
         self.assertTrue(wants_open("lets work on bench"))
         self.assertTrue(wants_open("there is no browser tab open for the bench"))
         self.assertFalse(wants_open("duplicate board 1 offset 900mm"))
+        self.assertFalse(wants_open("do we have an open project on bench"))
         self.assertTrue(wants_close("close the bench please"))
         self.assertTrue(wants_close("lets stop the bench right now. I want to do something else"))
         self.assertFalse(wants_close("open the bench"))
+        self.assertEqual(
+            parse_project_ops("save this as the pergola"),
+            [{"op": "save", "as": "pergola"}],
+        )
+        self.assertEqual(
+            parse_project_ops("save this so I can work on a new one"),
+            [{"op": "save"}, {"op": "new"}],
+        )
+        self.assertEqual(
+            parse_project_ops(
+                "save this as the pergola so I can work on a new one"
+            ),
+            [{"op": "save", "as": "pergola"}, {"op": "new"}],
+        )
+        self.assertEqual(parse_project_ops("start a new project"), [{"op": "new"}])
+        self.assertEqual(
+            parse_project_ops(
+                'lets work on a new project called "circuit example" on the bench'
+            ),
+            [{"op": "new", "as": "circuit example"}],
+        )
+        self.assertEqual(
+            parse_project_ops("go back to the first one"),
+            [{"op": "load", "name": "first"}],
+        )
+        self.assertEqual(
+            parse_project_ops("go back to the pergola"),
+            [{"op": "load", "name": "pergola"}],
+        )
+        self.assertEqual(parse_project_ops("list projects"), [{"op": "list_projects"}])
+        self.assertEqual(parse_project_ops("open the bench"), [])
+        self.assertEqual(parse_ops("open the bench", {"parts": []}), [])
+        self.assertEqual(
+            parse_ops("save this as the pergola", {"parts": []})[0]["op"],
+            "save",
+        )
 
     def test_script_starts_when_talk_sets_pythonpath(self) -> None:
         sock = socket.socket()
@@ -328,6 +381,113 @@ class BenchHttpTests(unittest.TestCase):
         self.assertEqual(self._get("api/scene")["parts"][0]["length_mm"], 800)
         self._post("api/ops", {"ops": [{"op": "set_parts", "parts": snapshot}]})
         self.assertEqual(self._get("api/scene")["parts"][0]["length_mm"], 1600)
+
+    def test_save_new_and_load_project(self) -> None:
+        self._post(
+            "api/parts",
+            {"kind": "board", "length_mm": 1600, "width_mm": 70, "thickness_mm": 15},
+        )
+        saved = self._post("api/ops", {"ops": [{"op": "save", "as": "pergola"}]})
+        self.assertIn("pergola", " ".join(saved.get("notes") or []).lower())
+        scene = self._get("api/scene")
+        self.assertEqual(scene["project"]["name"], "pergola")
+        self.assertEqual(len(scene["parts"]), 1)
+        self.assertGreaterEqual(int(self._get("api/health").get("api") or 0), 7)
+        listed = self._get("api/projects")
+        self.assertEqual(listed["current"], "pergola")
+        self.assertTrue(any(p.get("id") == "pergola" for p in listed["projects"]))
+        emptied = self._post("api/ops", {"ops": [{"op": "new"}]})
+        self.assertIn("on file", " ".join(emptied.get("notes") or []).lower())
+        empty = self._get("api/scene")
+        self.assertEqual(empty.get("parts") or [], [])
+        self.assertEqual((empty.get("project") or {}).get("id") or "", "")
+        loaded = self._post("api/ops", {"ops": [{"op": "load", "name": "first"}]})
+        self.assertIn("pergola", " ".join(loaded.get("notes") or []).lower())
+        back = self._get("api/scene")
+        self.assertEqual(len(back["parts"]), 1)
+        self.assertEqual(back["parts"][0]["length_mm"], 1600)
+        self.assertEqual(back["project"]["name"], "pergola")
+
+    def test_new_auto_saves_untitled_work(self) -> None:
+        self._post(
+            "api/parts",
+            {"kind": "board", "length_mm": 800, "width_mm": 70, "thickness_mm": 15},
+        )
+        self._post("api/ops", {"ops": [{"op": "new"}]})
+        self.assertEqual(self._get("api/scene").get("parts") or [], [])
+        idx = self._get("api/projects")
+        self.assertTrue(idx["projects"])
+        self._post("api/ops", {"ops": [{"op": "load", "name": "previous"}]})
+        parts = self._get("api/scene")["parts"]
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0]["length_mm"], 800)
+
+    def test_load_missing_project_is_an_error(self) -> None:
+        req = urllib.request.Request(
+            self.base + "api/ops",
+            data=json.dumps({"ops": [{"op": "load", "name": "nope"}]}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req)
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_apply_save_as_pergola_does_not_redesign(self) -> None:
+        import memory.bench as mb
+
+        self._post(
+            "api/parts",
+            {"kind": "board", "length_mm": 1600, "width_mm": 70, "thickness_mm": 15},
+        )
+        with (
+            patch.object(mb, "URL", self.base),
+            patch.object(mb, "ensure_server", return_value=False),
+            patch.object(mb, "open_ui"),
+        ):
+            speak, result = apply(
+                self.home, "save this as the pergola so I can work on a new one"
+            )
+        self.assertEqual(result, "ok")
+        self.assertIn("pergola", speak.lower())
+        self.assertEqual(self._get("api/scene").get("parts") or [], [])
+        idx = self._get("api/projects")
+        self.assertEqual(idx["previous"], "pergola")
+        self._post("api/ops", {"ops": [{"op": "load", "name": "pergola"}]})
+        self.assertEqual(len(self._get("api/scene")["parts"]), 1)
+
+    def test_wire_kit_connects_room_node_roles(self) -> None:
+        for spec in (
+            {"length_mm": 48, "width_mm": 25, "thickness_mm": 12, "role": "mcu", "name": "ESP32-S3-DevKitC-1"},
+            {"length_mm": 65, "width_mm": 18, "thickness_mm": 18, "role": "cell", "name": "18650"},
+            {"length_mm": 26, "width_mm": 17, "thickness_mm": 4, "role": "bms", "name": "TP4056"},
+            {"length_mm": 5, "width_mm": 4, "thickness_mm": 1, "role": "mic", "name": "INMP441"},
+            {"length_mm": 12, "width_mm": 6, "thickness_mm": 8, "role": "mute", "name": "mute"},
+            {"length_mm": 5, "width_mm": 5, "thickness_mm": 8, "role": "led", "name": "LED"},
+            {"length_mm": 14, "width_mm": 9, "thickness_mm": 7, "role": "usb", "name": "USB-C"},
+            {"length_mm": 50, "width_mm": 30, "thickness_mm": 22, "role": "psu", "name": "PSU"},
+        ):
+            self._post("api/ops", {"ops": [{"op": "add", **spec}]})
+        out = self._post("api/ops", {"ops": [{"op": "wire_kit"}]})
+        self.assertIn("wired", " ".join(out.get("notes") or []).lower())
+        scene = self._get("api/scene")
+        nets = {str(w.get("net")) for w in scene.get("wires") or []}
+        self.assertIn("I2S_SCK", nets)
+        self.assertIn("VBAT", nets)
+        self.assertGreaterEqual(len(scene["wires"]), 8)
+        import memory.bench as mb
+        from memory.bench import parse_ops
+
+        ops = parse_ops("show how the components are wired together", scene)
+        self.assertEqual(ops[0]["op"], "wire_kit")
+        with (
+            patch.object(mb, "URL", self.base),
+            patch.object(mb, "ensure_server", return_value=False),
+            patch.object(mb, "open_ui"),
+        ):
+            speak, result = apply(self.home, "wire the room node on the bench")
+        self.assertEqual(result, "ok")
+        self.assertIn("wired", speak.lower())
 
     def test_apply_stand_does_not_add_a_second_board(self) -> None:
         self._post(

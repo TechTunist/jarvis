@@ -26,7 +26,10 @@ _DEFAULT = (
             "Delete: POST /api/delete {\"n\":2}. "
             "Camera (millimetres, look-at is x along, y across, z up): GET /api/scene camera. "
             "POST /api/camera {look_x_mm,look_y_mm,look_z_mm,az,el,dist_mm}. "
-            "Ops: pan {dx_mm,dy_mm,dz_mm}, look_at {n:3} or {look_x_mm,...}, frame."
+            "Ops: pan {dx_mm,dy_mm,dz_mm}, look_at {n:3} or {look_x_mm,...}, frame. "
+            "Projects: POST /api/ops save {as:'name'}, new, load {name:'name'|'previous'|'first'}, "
+            "list_projects. GET /api/projects. Save then new to put work aside; load to go back. "
+            "Do not clear to switch."
         ),
     },
     {
