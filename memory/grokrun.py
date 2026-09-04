@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -12,16 +13,24 @@ from typing import NamedTuple
 
 
 def _child_env() -> dict[str, str]:
-    """Same desktop as Matt: snap Brave, DISPLAY, session bus."""
+    """Hands Grok inherits this process env.
+
+    On Linux, also the desktop session (snap PATH, DISPLAY, DBus) so browser
+    tools work. Windows has no getuid / X11 / snap — leave PATH alone.
+    """
     env = dict(os.environ)
+    if sys.platform == "win32":
+        return env
     path = env.get("PATH") or ""
     extra = "/snap/bin:/usr/bin:/usr/local/bin"
     if extra not in path:
         env["PATH"] = f"{path}:{extra}" if path else extra
     if not env.get("DISPLAY") and Path("/tmp/.X11-unix/X0").exists():
         env["DISPLAY"] = ":0"
-    uid = os.getuid()
-    runtime = Path(f"/run/user/{uid}")
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return env
+    runtime = Path(f"/run/user/{getuid()}")
     if runtime.is_dir():
         env.setdefault("XDG_RUNTIME_DIR", str(runtime))
         bus = runtime / "bus"

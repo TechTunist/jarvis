@@ -212,18 +212,61 @@ def _session_turns(path: Path, limit: int = 40) -> str:
     return "\n".join(rows[-(limit * 2) :])
 
 
-def _parent_gone(pid: int) -> bool:
+def _pid_alive(pid: int) -> bool:
+    """True if pid is still running. Never uses os.kill on Windows (that can
+    broadcast CTRL_C_EVENT to the whole console)."""
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.windll.kernel32
+        handle = k32.OpenProcess(0x1000, False, int(pid))  # QUERY_LIMITED
+        if not handle:
+            return False
+        code = wintypes.DWORD()
+        ok = k32.GetExitCodeProcess(handle, ctypes.byref(code))
+        k32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return True
-    except PermissionError:
         return False
-    except OSError:
+    except PermissionError:
         return True
-    return False
+    except OSError:
+        return False
+    return True
+
+
+def _parent_gone(pid: int) -> bool:
+    return not _pid_alive(pid)
+
+
+def process_image(pid: int) -> str:
+    """Executable path for pid, or '' if unknown. Windows only."""
+    if pid <= 0 or sys.platform != "win32":
+        return ""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.windll.kernel32
+    handle = k32.OpenProcess(0x1000, False, int(pid))
+    if not handle:
+        return ""
+    k32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    buf = ctypes.create_unicode_buffer(32768)
+    size = wintypes.DWORD(len(buf))
+    ok = k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+    k32.CloseHandle(handle)
+    return buf.value if ok else ""
 
 
 class HostWorker:
@@ -856,7 +899,9 @@ def spawn_host_workshop(
     ]
     extra: dict = {}
     if sys.platform == "win32":
-        extra["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        extra["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        )
     else:
         extra["start_new_session"] = True
     return subprocess.Popen(cmd, cwd=str(root), env=env, **extra)
@@ -894,7 +939,9 @@ def spawn_shell_workshop(
     ]
     extra: dict = {}
     if sys.platform == "win32":
-        extra["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        extra["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        )
     else:
         extra["start_new_session"] = True
     return subprocess.Popen(cmd, cwd=str(root), env=env, **extra)
@@ -925,11 +972,12 @@ def drain_runnable(
 
 
 def _ignore_sigint() -> None:
-    if sys.platform == "win32":
-        return
     import signal
 
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except (ValueError, OSError):
+        pass
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

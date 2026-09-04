@@ -1,12 +1,13 @@
 """Jarvis receptionist latency spike.
 
-Hold Home to talk, or type if --stt none.
+Hold Home to talk, or --listen for always-on energy VAD, or type if --stt none.
 Times every stage. Swap --brain / --model / --stt / --tts.
 
 Examples:
   .venv\\Scripts\\python talk.py --bench
   .venv\\Scripts\\python talk.py --brain agent --model grok-4.6 --stt none --tts sapi
   .venv\\Scripts\\python talk.py --brain agent --model grok-4.6 --stt tiny --tts sapi
+  .venv\\Scripts\\python talk.py --brain agent --model grok-4.6 --stt base --tts edge --listen
   .venv\\Scripts\\python talk.py --brain cli --model grok-4.6 --stt none --tts none
 """
 from __future__ import annotations
@@ -39,10 +40,13 @@ from hud_server import (  # noqa: E402
 from memory.distill import distill_session  # noqa: E402
 from memory.grokrun import NO_TOOLS  # noqa: E402
 from memory.ears import (  # noqa: E402
+    EnergyGate,
+    after_wake,
     format_inputs,
     list_inputs,
     load_mic_pref,
     pick_input,
+    rms_peak,
     transcribe_pcm,
     vocabulary,
 )
@@ -67,6 +71,7 @@ from memory.reminders import take_due  # noqa: E402
 from memory.worker import (  # noqa: E402
     HOST_CAPS,
     drain_runnable,
+    process_image,
     spawn_host_workshop,
     spawn_shell_workshop,
 )
@@ -168,6 +173,29 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+_NOT_TALK = frozenset(
+    {
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "conhost.exe",
+        "openconsole.exe",
+        "windowsterminal.exe",
+        "windows terminal.exe",
+    }
+)
+
+
+def _ignore_console_ctrl(ignore: bool) -> None:
+    """Windows: taskkill / dying console apps can broadcast CTRL_C_EVENT to
+    this window. Swallow it during lock-steal and worker spawn."""
+    if not WIN:
+        return
+    import ctypes
+
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(None, bool(ignore))
+
+
 def take_lock() -> None:
     """Only one Talk window. An old David session plus a new British one
     both bind Home and both speak."""
@@ -184,7 +212,23 @@ def take_lock() -> None:
 
 
 def _kill_pid(pid: int) -> None:
+    if pid <= 0 or pid == os.getpid():
+        return
+    try:
+        if pid == os.getppid():
+            log(f"[talk] skip stopping pid={pid} (this window's parent)")
+            return
+    except OSError:
+        pass
     if WIN:
+        image = process_image(pid)
+        name = Path(image).name.lower() if image else ""
+        if not name:
+            log(f"[talk] skip stopping pid={pid} (already gone)")
+            return
+        if name in _NOT_TALK or "python" not in name:
+            log(f"[talk] skip stopping pid={pid} ({name})")
+            return
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(pid)],
             stdout=subprocess.DEVNULL,
@@ -757,6 +801,59 @@ def record_held(is_held, samplerate=16000):
     return np.concatenate(chunks, axis=0)
 
 
+def record_utterance(should_stop, samplerate=16000):
+    """Open mic: wait for speech energy, then until silence. None if aborted."""
+    import numpy as np
+    import sounddevice as sd
+
+    gate = EnergyGate()
+    chunks = []
+    preroll = []
+    started = False
+    kwargs = {"samplerate": samplerate, "channels": 1, "dtype": "float32"}
+    if _mic is not None:
+        kwargs["device"] = _mic["index"]
+    frame = int(samplerate * 0.03)
+    last_log = time.monotonic()
+    max_rms = 0.0
+    max_peak = 0.0
+    with sd.InputStream(**kwargs) as stream:
+        while not should_stop():
+            block, _ = stream.read(frame)
+            copy = block.copy()
+            rms, peak = rms_peak(copy.reshape(-1))
+            if rms > max_rms:
+                max_rms = rms
+            if peak > max_peak:
+                max_peak = peak
+            ev = gate.feed(rms, peak)
+            if not started:
+                preroll.append(copy)
+                if len(preroll) > gate.preroll_n:
+                    preroll.pop(0)
+                now = time.monotonic()
+                if now - last_log >= 5.0:
+                    log(
+                        f"[ears] waiting for speech  rms={max_rms:.4f} peak={max_peak:.4f} "
+                        f"noise={gate.noise:.4f}"
+                    )
+                    last_log = now
+                    max_rms = 0.0
+                    max_peak = 0.0
+                if ev == "start":
+                    started = True
+                    chunks.extend(preroll)
+                    hud_state("listening")
+                    log("[ears] open mic — speech")
+                continue
+            chunks.append(copy)
+            if ev == "end":
+                break
+    if not started or not chunks:
+        return None
+    return np.concatenate(chunks, axis=0)
+
+
 class Mouth:
     def __init__(
         self,
@@ -780,6 +877,7 @@ class Mouth:
         self._token = 0
         self._ffmpeg: subprocess.Popen | None = None
         self.hear = True
+        self._speaking = False
         if kind == "sapi":
             self._init_offline()
 
@@ -847,10 +945,15 @@ class Mouth:
         log("[mouth] you should hear: Jarvis online.")
         self.say("Jarvis online.")
 
+    @property
+    def busy(self) -> bool:
+        return bool(self._speaking)
+
     def interrupt(self) -> None:
         """Cut current playback so a newer command can take the mouth."""
         self._token += 1
         self._cancel.set()
+        self._speaking = False
         proc = self._ffmpeg
         if proc is not None:
             try:
@@ -894,6 +997,13 @@ class Mouth:
             return
         if self._cut(token):
             return
+        self._speaking = True
+        try:
+            self._say_locked_body(text, token)
+        finally:
+            self._speaking = False
+
+    def _say_locked_body(self, text: str, token: int) -> None:
         if not self.hear:
             log(f"[mouth] phone-only: {text}")
             try:
@@ -1831,8 +1941,23 @@ def _drain_loop(desk: Desk, stop: threading.Event) -> None:
             log(f"[jobs] drain {exc}")
 
 
-def run_talk(desk: Desk, stt: str) -> None:
-    log("Talk: hold Home, speak, release. Esc or Ctrl-C quits. Type if --stt none.")
+def run_talk(
+    desk: Desk, stt: str, listen: bool = False, wake: str | None = None
+) -> None:
+    if stt == "none":
+        log("Talk: type a line. Esc or Ctrl-C quits.")
+    elif wake:
+        log(
+            f"Talk: say '{wake}' then the request. Home still PTT (no wake needed). "
+            "Esc or Ctrl-C quits."
+        )
+    elif listen:
+        log(
+            "Talk: always-on mic (speak, then pause). Home still works as PTT. "
+            "Esc or Ctrl-C quits."
+        )
+    else:
+        log("Talk: hold Home, speak, release. Esc or Ctrl-C quits. Type if --stt none.")
     hud_state("idle")
     stop = threading.Event()
     threading.Thread(target=_drain_loop, args=(desk, stop), daemon=True).start()
@@ -1841,7 +1966,7 @@ def run_talk(desk: Desk, stt: str) -> None:
         tty = _silence_tty()
         threading.Thread(target=_swallow_keys, args=(stop,), daemon=True).start()
     try:
-        _run_talk_loop(desk, stt)
+        _run_talk_loop(desk, stt, listen=listen, wake=wake)
     finally:
         stop.set()
         _restore_tty(tty)
@@ -1909,7 +2034,71 @@ def _ptt_reader(
             on_line()
 
 
-def _run_talk_loop(desk: Desk, stt: str) -> None:
+def _open_mic_reader(
+    state: dict,
+    inbox: queue.Queue,
+    quit_ev: threading.Event,
+    desk: Desk,
+    on_line=None,
+    wake: str | None = None,
+) -> None:
+    cool = False
+    while not quit_ev.is_set() and not state.get("quit"):
+        if desk.mouth.busy and not state.get("down"):
+            cool = True
+            time.sleep(0.05)
+            continue
+        if cool and not state.get("down"):
+            time.sleep(0.35)
+            cool = False
+            continue
+        hud_state("idle")
+        t0 = time.perf_counter()
+        used_ptt = False
+        if state.get("down"):
+            used_ptt = True
+            log("[ptt] recording...")
+            pcm = record_held(lambda: bool(state.get("down")) and not quit_ev.is_set())
+        else:
+            pcm = record_utterance(
+                lambda: quit_ev.is_set()
+                or state.get("quit")
+                or (desk.mouth.busy and not state.get("down"))
+                or bool(state.get("down"))
+            )
+            if state.get("down"):
+                continue
+        if pcm is None or getattr(pcm, "size", 0) < 1600:
+            hud_state("idle")
+            continue
+        text, note = transcribe(pcm)
+        stt_ms = round((time.perf_counter() - t0) * 1000)
+        log(f"[you] {text!r}  (stt {stt_ms}ms {note})")
+        if not text:
+            if "quiet" in note:
+                log("[ears] too quiet — lid closed or wrong mic? USB or phone HUD is better.")
+                inbox.put(("__quiet__", None))
+            hud_state("idle")
+            continue
+        if wake and not used_ptt:
+            rest = after_wake(text, wake)
+            if rest is None:
+                log(f"[ears] no wake '{wake}' — ignored")
+                hud_state("idle")
+                continue
+            if not rest:
+                text = "hello"
+            else:
+                text = rest
+            log(f"[ears] wake → {text!r}")
+        inbox.put((text, stt_ms))
+        if on_line is not None:
+            on_line()
+
+
+def _run_talk_loop(
+    desk: Desk, stt: str, listen: bool = False, wake: str | None = None
+) -> None:
     inbox: queue.Queue = queue.Queue()
     quit_ev = threading.Event()
     if stt == "none":
@@ -1938,10 +2127,32 @@ def _run_talk_loop(desk: Desk, stt: str) -> None:
         return
     state = {"down": False, "quit": False}
     start_ptt_listener(state)
-    threading.Thread(
-        target=_ptt_reader, args=(state, inbox, quit_ev, desk.preempt), daemon=True
-    ).start()
-    log("waiting for Home (or iPhone on the PC hotspot)...")
+    open_mic = listen or bool(wake)
+    if open_mic:
+        threading.Thread(
+            target=_open_mic_reader,
+            kwargs={
+                "state": state,
+                "inbox": inbox,
+                "quit_ev": quit_ev,
+                "desk": desk,
+                "on_line": desk.preempt,
+                "wake": wake,
+            },
+            daemon=True,
+        ).start()
+        if wake:
+            log(
+                f"listening for '{wake}'. Home still works. "
+                "iPhone HUD is still hold-to-talk."
+            )
+        else:
+            log("listening (open mic). Home still works. iPhone HUD is still hold-to-talk.")
+    else:
+        threading.Thread(
+            target=_ptt_reader, args=(state, inbox, quit_ev, desk.preempt), daemon=True
+        ).start()
+        log("waiting for Home (or iPhone on the PC hotspot)...")
     while not state["quit"] and not quit_ev.is_set():
         try:
             job = incoming_jobs.get_nowait()
@@ -1996,6 +2207,19 @@ def parse_args():
     p.add_argument("--model", choices=("grok-4.6", "grok-4.5"), default="grok-4.6")
     p.add_argument("--stt", choices=("none", "tiny", "base", "small"), default="none")
     p.add_argument(
+        "--listen",
+        action="store_true",
+        help="always-on mic: speak, pause. Home still works as PTT. Needs --stt.",
+    )
+    p.add_argument(
+        "--wake",
+        nargs="?",
+        const="jarvis",
+        default=None,
+        metavar="WORD",
+        help="open mic, but only act if the clip starts with WORD (default jarvis). Implies --listen.",
+    )
+    p.add_argument(
         "--mic",
         default=None,
         help="input device index or name substring (Focusrite, Scarlett, …)",
@@ -2048,10 +2272,24 @@ def _wait_for_worker(registry: WorkshopRegistry, timeout: float = 2.0) -> bool:
 def _stop_worker(proc: subprocess.Popen | None) -> None:
     if proc is None or proc.poll() is not None:
         return
+    if WIN:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        try:
+            proc.wait(timeout=2)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            pass
+        return
     proc.terminate()
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
+        proc.kill()
+    except KeyboardInterrupt:
         proc.kill()
 
 
@@ -2093,14 +2331,15 @@ def main() -> None:
         return
     if not GROK.is_file():
         sys.exit(f"grok CLI missing: {GROK}  (install Grok Build and run grok login)")
-    take_lock()
     home = None
     session = None
     board = None
     desk = None
     workshop_procs: list[subprocess.Popen] = []
     router = None
+    _ignore_console_ctrl(True)
     try:
+        take_lock()
         home, prompt, board, registry = open_memory(args.data_dir)
         warn = home.take_lease(os.getpid())
         if warn:
@@ -2138,6 +2377,8 @@ def main() -> None:
                 )
             elif workshop_procs:
                 log("[workshop] no heartbeat yet — jobs will still dispatch")
+            log("[talk] starting HUD and brain — leave this window open")
+        _ignore_console_ctrl(False)
         if not args.no_hud and not args.bench:
             start_hud(open_browser=True)
             hud_state("idle")
@@ -2173,8 +2414,15 @@ def main() -> None:
         else:
             session = SessionLog.start(home)
             desk = Desk(brain, mouth, board, registry, session, router=router)
-            run_talk(desk, args.stt)
+            wake = (args.wake or "").strip() or None
+            if args.stt == "none":
+                wake = None
+            listen = bool((args.listen or wake) and args.stt != "none")
+            run_talk(desk, args.stt, listen=listen, wake=wake)
+    except KeyboardInterrupt:
+        log("[talk] stopped")
     finally:
+        _ignore_console_ctrl(False)
         if session is not None and board is not None:
             session.close()
             dest = distill_session(session, board=board)

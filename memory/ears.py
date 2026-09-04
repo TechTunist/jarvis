@@ -42,6 +42,17 @@ AVOID = (
 BUILTIN = ("alc", "analog", "internal", "laptop", "pch", "realtek", "sof-")
 TOO_QUIET_PEAK = 0.008
 TOO_QUIET_RMS = 0.0015
+WAKE_LEAD = ("hey", "ok", "okay", "hi", "yo")
+# Open-mic energy gate (30 ms frames at 16 kHz). Not a wake word.
+# Low vs PTT: Focusrite speech often sits under 0.015 rms.
+OPEN_START_RMS = 0.004
+OPEN_HOLD_RMS = 0.0018
+OPEN_START_PEAK = 0.02
+OPEN_START_N = 3  # ~90 ms loud
+OPEN_END_N = 38  # ~1.14 s quiet — breath / think, not a comma
+OPEN_MIN_N = 8  # ~240 ms of speech
+OPEN_MAX_N = 400  # ~12 s
+OPEN_PREROLL = 8
 CORE_WORDS = (
     "Jarvis",
     "Matt",
@@ -139,6 +150,126 @@ def format_inputs(rows: list[dict], chosen: dict | None = None) -> str:
             f"{mark} {row['index']:3}  {row['kind']:8}  {row['name']}"
         )
     return "\n".join(lines)
+
+
+class EnergyGate:
+    """Frame energy VAD for always-on listen. No hardware, no Whisper."""
+
+    def __init__(
+        self,
+        start_rms: float = OPEN_START_RMS,
+        hold_rms: float = OPEN_HOLD_RMS,
+        start_n: int = OPEN_START_N,
+        end_n: int = OPEN_END_N,
+        min_n: int = OPEN_MIN_N,
+        max_n: int = OPEN_MAX_N,
+        preroll: int = OPEN_PREROLL,
+        start_peak: float = OPEN_START_PEAK,
+    ) -> None:
+        self.start_rms = start_rms
+        self.hold_rms = hold_rms
+        self.start_peak = start_peak
+        self.start_n = start_n
+        self.end_n = end_n
+        self.min_n = min_n
+        self.max_n = max_n
+        self.preroll_n = preroll
+        self.reset()
+
+    def reset(self) -> None:
+        self.speech = False
+        self.loud = 0
+        self.quiet = 0
+        self.voiced = 0
+        self.total = 0
+        self.noise = 0.0
+        self.preroll: list[float] = []
+
+    def feed(self, rms: float, peak: float = 0.0) -> str:
+        """Return idle, start, speech, or end."""
+        level = float(rms)
+        pk = float(peak)
+        if not self.speech:
+            self.preroll.append(level)
+            if len(self.preroll) > self.preroll_n:
+                self.preroll.pop(0)
+            if self.noise <= 0.0:
+                self.noise = max(level, 1e-6)
+            else:
+                self.noise = 0.97 * self.noise + 0.03 * min(level, self.noise * 4)
+            thresh = max(self.start_rms, self.noise * 4.0)
+            hold = max(self.hold_rms, self.noise * 1.6)
+            self._hold = hold
+            hot = level >= thresh or pk >= max(self.start_peak, self.noise * 10)
+            if hot:
+                self.loud += 1
+            else:
+                self.loud = 0
+            if self.loud >= self.start_n:
+                self.speech = True
+                self.quiet = 0
+                self.voiced = self.loud
+                self.total = self.loud
+                return "start"
+            return "idle"
+        self.total += 1
+        hold = getattr(self, "_hold", self.hold_rms)
+        if level >= hold or pk >= self.start_peak * 0.5:
+            self.quiet = 0
+            self.voiced += 1
+        else:
+            self.quiet += 1
+        ended = False
+        if self.quiet >= self.end_n and self.voiced >= self.min_n:
+            ended = True
+        if self.total >= self.max_n:
+            ended = True
+        if ended:
+            self.speech = False
+            return "end"
+        return "speech"
+
+
+def after_wake(text: str, word: str = "jarvis") -> str | None:
+    """If the line starts with the wake name, return the rest. None = ignore.
+
+    'Jarvis, lights off' → 'lights off'. Bare 'hey Jarvis' → '' (a ping).
+    Not a keyword spotter — Whisper already heard the clip.
+    """
+    raw = " ".join((text or "").split())
+    if not raw:
+        return None
+    name = (word or "jarvis").strip().lower()
+    if not name:
+        return None
+    low = raw.lower()
+    # Strip leading punctuation / vocatives.
+    body = re.sub(r"^[\s,.:;!?]+", "", low)
+    tokens = re.split(r"[\s,]+", body)
+    tokens = [re.sub(r"[^a-z0-9]+", "", t) for t in tokens]
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return None
+    i = 0
+    if tokens[0] in WAKE_LEAD and len(tokens) > 1:
+        i = 1
+    hit = None
+    for j in range(i, min(len(tokens), i + 3)):
+        if _wake_token(tokens[j], name):
+            hit = j
+            break
+    if hit is None:
+        return None
+    return " ".join(tokens[hit + 1 :])
+
+
+def _wake_token(tok: str, name: str) -> bool:
+    if tok == name:
+        return True
+    # Whisper often hears Jarvis as Jarvus / Jarvish.
+    if len(name) >= 5 and tok.startswith(name[:4]) and abs(len(tok) - len(name)) <= 2:
+        return True
+    return False
 
 
 def rms_peak(samples) -> tuple[float, float]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 from memory.home import JarvisHome
 from memory.jobs import JobBoard
 from memory.session import SessionLog
-from memory.grokrun import extract_json, text_from_stream
+from memory.grokrun import _child_env, extract_json, text_from_stream
 from memory.worker import HostWorker, append_bullet, dest_path, extract_place
 from memory.workshops import WorkshopRegistry
 
@@ -326,13 +327,22 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual((self.home.vault / "people" / "_household.md").read_text(encoding="utf-8").count("Tea at five."), 1)
 
     def test_parent_gone(self) -> None:
-        from memory.worker import _parent_gone
+        from memory.worker import _parent_gone, process_image
 
         self.assertTrue(_parent_gone(999_999_999))
         self.assertFalse(_parent_gone(os.getpid()))
+        if sys.platform == "win32":
+            image = process_image(os.getpid())
+            self.assertTrue(image.lower().endswith("python.exe"))
 
 
 class GrokrunParseTests(unittest.TestCase):
+    def test_child_env_runs_on_this_os(self) -> None:
+        env = _child_env()
+        self.assertIn("PATH", env)
+        if sys.platform == "win32":
+            self.assertEqual(env.get("PATH"), os.environ.get("PATH"))
+
     def test_extract_json_and_stream_text(self) -> None:
         self.assertEqual(extract_json('{"bullet": "Tea at five."}')["bullet"], "Tea at five.")
         wrapped = 'Sure.\n{"facts": []}\n'
@@ -355,7 +365,7 @@ class GrokrunParseTests(unittest.TestCase):
         self.assertIn("--tools", argv)
         self.assertIn("image_gen", argv)
         self.assertIn("--cwd", argv)
-        self.assertEqual(argv[argv.index("--cwd") + 1], "/tmp/imagine")
+        self.assertEqual(Path(argv[argv.index("--cwd") + 1]), Path("/tmp/imagine"))
         self.assertNotIn("--disallowed-tools", argv)
         self.assertIn("--disable-web-search", argv)
         self.assertIn("--no-leader", argv)

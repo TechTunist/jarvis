@@ -506,7 +506,7 @@ class IntentHomeTests(unittest.TestCase):
             classify("it is too bright in the living room jarvis").cap, HOME.cap
         )
         self.assertEqual(classify("dim the living room").cap, HOME.cap)
-        self.assertEqual(classify("what lights are on").cap, HOME.cap)
+        self.assertIsNone(classify("what lights are on").cap)
         self.assertTrue(is_house_followup("kitchen"))
 
     def test_yes_enqueues_when_pending(self) -> None:

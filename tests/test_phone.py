@@ -37,6 +37,9 @@ class PhoneScriptTests(unittest.TestCase):
         self.assertIn("self.hear = True", talk)
         self.assertIn("phone-only", talk)
         self.assertIn("_edge_mp3_only", talk)
+        self.assertIn("--listen", talk)
+        self.assertIn("--wake", talk)
+        self.assertIn("record_utterance", talk)
         self.assertIn("-nostdin", (ROOT / "receptionist" / "talk.py").read_text(encoding="utf-8"))
 
     def test_upload_suffix(self) -> None:
